@@ -1,5 +1,5 @@
 # ==========================================================
-# ASCEND Framework – igraph-free version (Full script)
+# ASCEND Framework 
 # ==========================================================
 
 # Load required packages (no igraph!)
@@ -277,6 +277,10 @@ test_r1r2 <- function(W, xj, S_w, xi, data, alpha = 0.05) {
               pval_1 = pval_1, p_value_diff = p_value_diff, r1 = r1, r2 = r2))
 }
 
+
+
+
+
 # ==========================================================
 # 4. Main ASCEND function 
 # ==========================================================
@@ -286,7 +290,7 @@ ascend_fn <- function(sim_obj, maxiter = 9, alpha = 0.05) {
   z <- as.matrix(select(dat, starts_with('z')))
   x <- as.matrix(select(dat, starts_with('x')))
   d_x <- ncol(x)
-  xlabs <- paste0('x', seq_len(d_x))
+  xlabs <- paste0('x', seq_len(d_x)) #Creates a vector of variable names
   dataAll <- as.data.frame(scale(dat))
   z_cols <- grep("^z", colnames(dataAll), value = TRUE)
   x_cols <- grep("^x", colnames(dataAll), value = TRUE)
@@ -295,10 +299,15 @@ ascend_fn <- function(sim_obj, maxiter = 9, alpha = 0.05) {
   set.seed(42)
   for (i in seq_len(d_x)) {
     node_i <- xlabs[i]
-    predictor_cols <- setdiff(c(z_cols, x_cols), node_i)
-    sub_df <- dataAll[, c(predictor_cols, node_i), drop = FALSE]
-    mb_list[[node_i]] <- learn.mb(sub_df, node = node_i, method = "gs",
-                                  test = "mi-g", alpha = alpha)
+    # CORRECTION: Only use Z's initially (not Z+X)
+    sub_df <- dataAll[, c(z_cols, node_i), drop = FALSE]
+    mb_list[[node_i]] <- learn.mb(
+      sub_df, 
+      node = node_i, 
+      method = "iamb",
+      test = "cor",     
+      alpha = alpha
+    )
   }
   
   adj_new <- matrix(NA, d_x, d_x); diag(adj_new) <- NA
@@ -384,7 +393,14 @@ ascend_fn <- function(sim_obj, maxiter = 9, alpha = 0.05) {
       non_desc <- which((adj_new[, i] == 1) | (adj_new[, i] == 0.5))
       A_i <- intersect(union(old_mb, xlabs[non_desc]), colnames(dataAll))
       sub_df2 <- dataAll[, intersect(c(A_i, node_i), colnames(dataAll)), drop = FALSE]
-      new_mb <- learn.mb(sub_df2, node = node_i, method = "gs", test = "mi-g", alpha = alpha)
+      #new_mb <- learn.mb(sub_df2, node = node_i, method = "gs", test = "mi-g", alpha = alpha)
+      new_mb <- learn.mb(
+        sub_df2, 
+        node = node_i, 
+        method = "iamb",  # More stable than GS
+        test = "cor",     # More appropriate for linear data
+        alpha = alpha
+      )
       if (!setequal(new_mb, old_mb)) converged <- FALSE
       mb_list[[node_i]] <- new_mb
     }
@@ -402,15 +418,15 @@ ascend_fn <- function(sim_obj, maxiter = 9, alpha = 0.05) {
 
 # Simulate one dataset 
 sim_obj <- sim_dat(
-  n = 1000,        # sample size
-  d_z = 50,       # number of z
-  d_x = 7,         # number of observed variables
-  rho = 0.8,
-  r2 = 0.9,        # variance explained by instruments
-  lin_pr = 1,      # linearity
-  sp = 0.5,       # sparsity
-  method = 'er',   # Erdős–Rényi structure
-  pref = 1
+  n = 2000,        # Larger sample size for stability
+  d_z = 50,        # Fewer Z's for testing
+  d_x = 5,         # Fewer X's for debugging
+  rho = 0.5,
+  r2 = 0.5,        # Stronger signal
+  lin_pr = 1,      # Linear only
+  sp = 0.5,        # Sparse graph
+  method = 'er',
+  pref = NA
 )
 
 # Run ascend algorithm
