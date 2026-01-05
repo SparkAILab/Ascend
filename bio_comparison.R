@@ -1,17 +1,6 @@
 # ============================================================================
 # ASCEND: COMPREHENSIVE COMPARISON WITH ESTABLISHED NETWORK INFERENCE METHODS
 # ============================================================================
-# Compared methods:
-# 1. ASCEND     - Novel tiered causal discovery (this work)
-# 2. PC         - Constraint-based causal discovery (Spirtes et al. 2000)
-# 3. GLASSO     - Sparse inverse covariance (Friedman et al. 2008)
-# 4. PPCOR      - Partial correlation with FDR (Kim 2015)
-# 5. GENIE3     - Tree-based ensemble (Huynh-Thu et al. 2010)
-# 6. Correlation- Simple association baseline
-# 7. ARACNE     - Information-theoretic pruning 
-# 8. CLR        - Context Likelihood of Relatedness 
-#  Note: Aracne and Clr almost reduces to mere correlation in linear mode 
-# ============================================================================
 
 # Load required packages
 library(ppcor)      # Partial correlation (Kim 2015)
@@ -57,7 +46,6 @@ preprocess_data <- function(sim_obj, method_type = "standard") {
   
   if (method_type == "genie3") {
     # GENIE3 prefers data in original scale or gently normalized
-    # Tree-based methods are scale-invariant but need reasonable ranges
     for (col in colnames(dat)) {
       dat[[col]] <- scale(dat[[col]])  # Simple z-scoring
     }
@@ -75,7 +63,6 @@ preprocess_data <- function(sim_obj, method_type = "standard") {
   col_vars <- apply(dat, 2, var, na.rm = TRUE)
   zero_var <- which(col_vars == 0)
   if (length(zero_var) > 0) {
-    # Add minimal noise only to problematic columns
     n <- nrow(dat)
     for (col in zero_var) {
       dat[, col] <- dat[, col] + rnorm(n, 0, 1e-8)
@@ -90,10 +77,38 @@ preprocess_data <- function(sim_obj, method_type = "standard") {
 # 2. EVALUATION METRICS (SKELETON COMPARISON)
 # ============================================================================
 
+extract_x_submatrix <- function(adj_matrix, x_cols) {
+  # Extract the X->X submatrix from a full adjacency matrix
+  if (is.null(adj_matrix) || nrow(adj_matrix) == 0) {
+    return(NULL)
+  }
+  
+  # Get indices of X variables
+  x_indices <- which(colnames(adj_matrix) %in% x_cols)
+  
+  if (length(x_indices) == 0) {
+    return(matrix(0, nrow = length(x_cols), ncol = length(x_cols)))
+  }
+  
+  # Extract submatrix
+  x_submatrix <- adj_matrix[x_indices, x_indices, drop = FALSE]
+  
+  # Ensure correct dimensions
+  if (nrow(x_submatrix) != length(x_cols)) {
+    x_submatrix <- matrix(0, nrow = length(x_cols), ncol = length(x_cols))
+  }
+  
+  return(x_submatrix)
+}
+
 compare_skeletons <- function(Gtrue, Gest) {
   # Ensure both are matrices
   Gtrue <- as.matrix(Gtrue)
   Gest <- as.matrix(Gest)
+  
+  if (nrow(Gtrue) != nrow(Gest) || ncol(Gtrue) != ncol(Gest)) {
+    stop(paste("Dimension mismatch: Gtrue =", dim(Gtrue), "Gest =", dim(Gest)))
+  }
   
   # Convert to undirected skeletons
   S_true <- ((Gtrue + t(Gtrue)) > 0) * 1L
@@ -128,95 +143,156 @@ compare_skeletons <- function(Gtrue, Gest) {
 }
 
 # ============================================================================
-# 3. METHOD IMPLEMENTATIONS 
+# 3. METHOD IMPLEMENTATIONS (UPDATED TO USE Z+X)
 # ============================================================================
 
 # 3.1 Correlation (baseline) - Pearson correlation thresholding
 run_correlation <- function(sim_obj, top_pct = 0.3) {
+  d_z <- sim_obj$params$d_z
   d_x <- sim_obj$params$d_x
-  x_data <- as.matrix(sim_obj$dat[, grep("^x", colnames(sim_obj$dat))])
+  total_vars <- d_z + d_x
   
-  cor_mat <- abs(cor(x_data))
-  score_vec <- cor_mat[upper.tri(cor_mat)]
+  # Use all data (Z+X)
+  full_data <- as.matrix(sim_obj$dat)
+  
+  # Compute correlation matrix
+  cor_mat <- abs(cor(full_data))
+  
+  # Initialize full adjacency matrix
+  adj_full <- matrix(0, total_vars, total_vars)
+  rownames(adj_full) <- colnames(adj_full) <- colnames(full_data)
+  
+  # For evaluation, we only care about X->X edges
+  # But we still need to compute correlations on full data
+  x_indices <- (d_z + 1):total_vars
+  x_cor_mat <- cor_mat[x_indices, x_indices, drop = FALSE]
+  
+  # Threshold only the X submatrix
+  score_vec <- x_cor_mat[upper.tri(x_cor_mat)]
   n_to_keep <- round(length(score_vec) * top_pct)
   thresh <- sort(score_vec, decreasing = TRUE)[n_to_keep]
   
-  adj <- (cor_mat >= thresh) * 1
-  diag(adj) <- 0
-  return(adj)
+  # Set X->X edges
+  x_adj <- (x_cor_mat >= thresh) * 1
+  diag(x_adj) <- 0
+  
+  # Insert into full adjacency
+  adj_full[x_indices, x_indices] <- x_adj
+  
+  return(adj_full)
 }
 
+# 3.2 ARACNE - Updated to use Z+X
 run_aracne <- function(sim_obj, top_pct = 0.3) {
+  d_z <- sim_obj$params$d_z
   d_x <- sim_obj$params$d_x
-  x_data <- as.matrix(sim_obj$dat[, grep("^x", colnames(sim_obj$dat))])
-  x_data[is.na(x_data)] <- 0
-  x_data <- x_data + matrix(rnorm(prod(dim(x_data)), 0, 1e-10), nrow=nrow(x_data))
+  total_vars <- d_z + d_x
+  
+  # Use all data (Z+X)
+  full_data <- as.matrix(sim_obj$dat)
+  full_data[is.na(full_data)] <- 0
+  full_data <- full_data + matrix(rnorm(prod(dim(full_data)), 0, 1e-10), 
+                                  nrow = nrow(full_data))
   
   tryCatch({
-    # Spearman is safer for ARACNE's rank-based pruning
-    mim <- minet::build.mim(x_data, estimator = "spearman")
-    # eps = 0 ensures we don't prune everything into NAs
-    net <- minet::aracne(mim, eps = 0)
+    # Compute mutual information on full data
+    mim <- minet::build.mim(full_data, estimator = "spearman")
     
-    score_vec <- net[upper.tri(net)]
-    # Filter for non-zero values that survived pruning
+    # Apply ARACNE to full matrix
+    net_full <- minet::aracne(mim, eps = 0)
+    
+    # Extract X submatrix
+    x_indices <- (d_z + 1):total_vars
+    x_net <- net_full[x_indices, x_indices, drop = FALSE]
+    
+    # Threshold X submatrix
+    score_vec <- x_net[upper.tri(x_net)]
     survivors <- score_vec[score_vec > 0]
     
-    if (length(survivors) < 2) return(matrix(0, d_x, d_x))
+    if (length(survivors) < 2) {
+      x_adj <- matrix(0, d_x, d_x)
+    } else {
+      n_to_keep <- max(1, round(length(score_vec) * top_pct))
+      thresh <- quantile(score_vec, 1 - top_pct, na.rm = TRUE)
+      x_adj <- (x_net >= thresh & x_net > 0) * 1
+    }
     
-    n_to_keep <- max(1, round(length(score_vec) * top_pct))
-    thresh <- quantile(score_vec, 1 - top_pct, na.rm = TRUE)
+    diag(x_adj) <- 0
     
-    adj <- (net >= thresh & net > 0) * 1
-    diag(adj) <- 0
-    return(adj)
+    # Create full adjacency
+    adj_full <- matrix(0, total_vars, total_vars)
+    rownames(adj_full) <- colnames(adj_full) <- colnames(full_data)
+    adj_full[x_indices, x_indices] <- x_adj
+    
+    return(adj_full)
   }, error = function(e) {
     message("ARACNE error: ", e$message)
-    return(matrix(0, d_x, d_x))
+    # Return empty full adjacency
+    adj_full <- matrix(0, total_vars, total_vars)
+    rownames(adj_full) <- colnames(adj_full) <- colnames(sim_obj$dat)
+    return(adj_full)
   })
 }
 
+# 3.3 CLR - Updated to use Z+X
 run_clr <- function(sim_obj, top_pct = 0.3) {
+  d_z <- sim_obj$params$d_z
   d_x <- sim_obj$params$d_x
-  # Ensure we have a matrix with no NAs
-  x_data <- as.matrix(sim_obj$dat[, grep("^x", colnames(sim_obj$dat))])
-  x_data[is.na(x_data)] <- 0
+  total_vars <- d_z + d_x
   
-  # Add tiny jitter to prevent 'mi.gauss' singular matrix errors
-  x_data <- x_data + matrix(rnorm(prod(dim(x_data)), 0, 1e-10), nrow=nrow(x_data))
+  # Use all data (Z+X)
+  full_data <- as.matrix(sim_obj$dat)
+  full_data[is.na(full_data)] <- 0
+  full_data <- full_data + matrix(rnorm(prod(dim(full_data)), 0, 1e-10), 
+                                  nrow = nrow(full_data))
   
   tryCatch({
-    # Use 'pearson' as the estimator - it is the most stable in minet
-    mim <- minet::build.mim(x_data, estimator = "pearson")
-    net <- minet::clr(mim)
+    # Compute mutual information on full data
+    mim <- minet::build.mim(full_data, estimator = "pearson")
+    net_full <- minet::clr(mim)
     
-    score_vec <- net[upper.tri(net)]
+    # Extract X submatrix
+    x_indices <- (d_z + 1):total_vars
+    x_net <- net_full[x_indices, x_indices, drop = FALSE]
+    
+    # Threshold X submatrix
+    score_vec <- x_net[upper.tri(x_net)]
     n_to_keep <- max(1, round(length(score_vec) * top_pct))
-    
-    # Use quantile to avoid sort/indexing errors
     thresh <- quantile(score_vec, 1 - top_pct, na.rm = TRUE)
     
-    adj <- (net >= thresh) * 1
-    diag(adj) <- 0
-    return(adj)
+    x_adj <- (x_net >= thresh) * 1
+    diag(x_adj) <- 0
+    
+    # Create full adjacency
+    adj_full <- matrix(0, total_vars, total_vars)
+    rownames(adj_full) <- colnames(adj_full) <- colnames(full_data)
+    adj_full[x_indices, x_indices] <- x_adj
+    
+    return(adj_full)
   }, error = function(e) {
     message("CLR error: ", e$message)
-    return(matrix(0, d_x, d_x))
+    adj_full <- matrix(0, total_vars, total_vars)
+    rownames(adj_full) <- colnames(adj_full) <- colnames(sim_obj$dat)
+    return(adj_full)
   })
 }
 
-# 3.2 PPCOR - Partial correlation with FDR correction
+# 3.4 PPCOR - Partial correlation with FDR correction (uses Z+X)
 run_ppcor <- function(sim_obj, alpha = 0.05) {
+  d_z <- sim_obj$params$d_z
   d_x <- sim_obj$params$d_x
-  x_data <- as.matrix(sim_obj$dat[, grep("^x", colnames(sim_obj$dat))])
+  total_vars <- d_z + d_x
   
-  if (ncol(x_data) < 3) {
-    return(run_correlation(sim_obj))  # Fallback for small networks
+  # Use all data (Z+X)
+  full_data <- as.matrix(sim_obj$dat)
+  
+  if (ncol(full_data) < 3) {
+    return(run_correlation(sim_obj))
   }
   
   tryCatch({
-    # Compute partial correlations using ppcor package
-    pcor_result <- ppcor::pcor(x_data, method = "pearson")
+    # Compute partial correlations on full data
+    pcor_result <- ppcor::pcor(full_data, method = "pearson")
     
     # Extract p-values
     pvals <- pcor_result$p.value
@@ -227,119 +303,153 @@ run_ppcor <- function(sim_obj, alpha = 0.05) {
     pvals_vec <- pvals[ut]
     pvals_adj <- p.adjust(pvals_vec, method = "BH")
     
-    # Create adjacency matrix
-    adj <- matrix(0, d_x, d_x)
-    adj[ut] <- (pvals_adj < alpha) * 1
-    adj <- adj + t(adj)  # Symmetrize
+    # Create full adjacency matrix
+    adj_full <- matrix(0, total_vars, total_vars)
+    rownames(adj_full) <- colnames(adj_full) <- colnames(full_data)
+    adj_full[ut] <- (pvals_adj < alpha) * 1
+    adj_full <- adj_full + t(adj_full)  # Symmetrize
     
-    return(adj)
+    # For evaluation, we only care about X->X edges
+    # But we return the full matrix for consistency
+    
+    return(adj_full)
   }, error = function(e) {
-    # Fallback to correlation on error
     return(run_correlation(sim_obj))
   })
 }
 
-# 3.3 GLASSO - Sparse inverse covariance estimation
+# 3.5 GLASSO - Sparse inverse covariance estimation (uses Z+X)
 run_glasso <- function(sim_obj, rho = 0.1) {
+  d_z <- sim_obj$params$d_z
   d_x <- sim_obj$params$d_x
-  x_data <- as.matrix(sim_obj$dat[, grep("^x", colnames(sim_obj$dat))])
+  total_vars <- d_z + d_x
+  
+  # Use all data (Z+X)
+  full_data <- as.matrix(sim_obj$dat)
   
   tryCatch({
     # Standardize data
-    x_scaled <- scale(x_data)
+    full_scaled <- scale(full_data)
     
     # Compute sample covariance
-    S <- cov(x_scaled)
+    S <- cov(full_scaled)
     
     # Graphical Lasso with given regularization
     result <- glasso::glasso(S, rho = rho)
     
     # Non-zero entries in precision matrix = edges
-    adj <- (result$wi != 0) * 1
-    diag(adj) <- 0
-    adj <- pmax(adj, t(adj))  # Symmetrize (should already be symmetric)
+    adj_full <- (result$wi != 0) * 1
+    diag(adj_full) <- 0
+    adj_full <- pmax(adj_full, t(adj_full))  # Symmetrize
     
-    return(adj)
+    rownames(adj_full) <- colnames(adj_full) <- colnames(full_data)
+    
+    return(adj_full)
   }, error = function(e) {
-    return(matrix(0, d_x, d_x))
+    adj_full <- matrix(0, total_vars, total_vars)
+    rownames(adj_full) <- colnames(adj_full) <- colnames(sim_obj$dat)
+    return(adj_full)
   })
 }
 
-# 3.4 PC Algorithm - Constraint-based causal discovery
+# 3.6 PC Algorithm - Constraint-based causal discovery (uses Z+X)
 run_pc <- function(sim_obj, alpha = 0.05) {
+  d_z <- sim_obj$params$d_z
   d_x <- sim_obj$params$d_x
-  x_data <- as.matrix(sim_obj$dat[, grep("^x", colnames(sim_obj$dat))])
+  total_vars <- d_z + d_x
   
-  if (ncol(x_data) < 3) {
+  # Use all data (Z+X)
+  full_data <- as.matrix(sim_obj$dat)
+  
+  if (ncol(full_data) < 3) {
     return(run_correlation(sim_obj))
   }
   
   tryCatch({
     # Prepare sufficient statistics for PC
-    x_scaled <- scale(x_data)
-    suffStat <- list(C = cor(x_scaled), n = nrow(x_scaled))
+    full_scaled <- scale(full_data)
+    suffStat <- list(C = cor(full_scaled), n = nrow(full_scaled))
     
-    # Run PC algorithm with stable skeleton estimation
+    # Run PC algorithm on all variables
     pc_fit <- pcalg::pc(
       suffStat = suffStat,
       indepTest = pcalg::gaussCItest,
-      p = ncol(x_scaled),
+      p = ncol(full_scaled),
       alpha = alpha,
-      skel.method = "stable",  # Stable version for reproducibility
-      u2pd = "retry"           # Retry on errors
+      skel.method = "stable",
+      u2pd = "retry"
     )
     
     # Extract skeleton (undirected edges)
     pc_amat <- as(pc_fit, "amat")
-    adj <- matrix(as.numeric(pc_amat), nrow = nrow(pc_amat))
+    adj_full <- matrix(as.numeric(pc_amat), nrow = nrow(pc_amat))
+    rownames(adj_full) <- colnames(adj_full) <- colnames(full_data)
     
     # Convert to undirected skeleton
-    adj_skeleton <- (adj | t(adj)) * 1
+    adj_full <- (adj_full | t(adj_full)) * 1
     
-    return(adj_skeleton)
+    return(adj_full)
   }, error = function(e) {
-    return(matrix(0, d_x, d_x))
+    adj_full <- matrix(0, total_vars, total_vars)
+    rownames(adj_full) <- colnames(adj_full) <- colnames(sim_obj$dat)
+    return(adj_full)
   })
 }
 
-run_genie3 <- function(sim_obj, n_trees = 500, top_pct = 0.3) { # Match sparsity or use higher pct
+# 3.7 GENIE3 - Tree-based ensemble (uses Z+X)
+run_genie3 <- function(sim_obj, n_trees = 500, top_pct = 0.3) {
+  d_z <- sim_obj$params$d_z
   d_x <- sim_obj$params$d_x
-  x_data <- as.matrix(sim_obj$dat[, grep("^x", colnames(sim_obj$dat))])
+  total_vars <- d_z + d_x
+  
+  # Use all data (Z+X)
+  full_data <- as.matrix(sim_obj$dat)
   
   tryCatch({
-    x_transposed <- t(x_data)
-    gene_names <- paste0("Gene", 1:d_x)
-    rownames(x_transposed) <- gene_names
+    full_transposed <- t(full_data)
+    var_names <- colnames(full_data)
+    rownames(full_transposed) <- var_names
     
-    # Run GENIE3
+    # Run GENIE3 on all variables
     weight_matrix <- GENIE3::GENIE3(
-      exprMatrix = x_transposed,
-      treeMethod = "RF", # Random Forest is standard
+      exprMatrix = full_transposed,
+      treeMethod = "RF",
       nTrees = n_trees,
       nCores = 1,
       verbose = FALSE
     )
     
-    # 1. Convert weight matrix to a symmetric score matrix for skeleton analysis
-    # This is better than getLinkList for undirected comparisons
+    # Convert to symmetric scores
     sym_weights <- (weight_matrix + t(weight_matrix)) / 2
     
-    # 2. Thresholding: Keep the top 30% of weights (matching your simulation sparsity)
-    # This ensures GENIE3 has enough "room" to find the true edges
-    thresh <- quantile(sym_weights[upper.tri(sym_weights)], 1 - top_pct)
-    adj <- (sym_weights >= thresh) * 1
-    diag(adj) <- 0
+    # Extract X submatrix
+    x_indices <- (d_z + 1):total_vars
+    x_weights <- sym_weights[x_indices, x_indices, drop = FALSE]
     
-    return(adj)
+    # Threshold X submatrix
+    thresh <- quantile(x_weights[upper.tri(x_weights)], 1 - top_pct, na.rm = TRUE)
+    x_adj <- (x_weights >= thresh) * 1
+    diag(x_adj) <- 0
+    
+    # Create full adjacency
+    adj_full <- matrix(0, total_vars, total_vars)
+    rownames(adj_full) <- colnames(adj_full) <- var_names
+    adj_full[x_indices, x_indices] <- x_adj
+    
+    return(adj_full)
   }, error = function(e) {
     message("GENIE3 error: ", e$message)
-    return(matrix(0, d_x, d_x))
+    adj_full <- matrix(0, total_vars, total_vars)
+    rownames(adj_full) <- colnames(adj_full) <- colnames(sim_obj$dat)
+    return(adj_full)
   })
 }
 
-# 3.6 ASCEND - Your method
+# 3.8 ASCEND - Your method (already uses Z+X by design)
 run_ascend <- function(sim_obj, alpha = 0.05) {
+  d_z <- sim_obj$params$d_z
   d_x <- sim_obj$params$d_x
+  total_vars <- d_z + d_x
   
   # Check if ascend_fn exists
   if (!exists("ascend_fn")) {
@@ -350,38 +460,51 @@ run_ascend <- function(sim_obj, alpha = 0.05) {
     # Run ASCEND
     adj_directed <- ascend_fn(sim_obj, alpha = alpha)
     
-    # Extract X->X submatrix
-    if (nrow(adj_directed) > d_x) {
-      x_idx <- (nrow(adj_directed) - d_x + 1):nrow(adj_directed)
-      adj_directed <- adj_directed[x_idx, x_idx]
+    # ASCEND returns X-to-X adjacency directly
+    # But we need to embed it in full adjacency for consistency
+    
+    # Create full adjacency matrix
+    adj_full <- matrix(0, total_vars, total_vars)
+    all_vars <- c(paste0("z", 1:d_z), paste0("x", 1:d_x))
+    rownames(adj_full) <- colnames(adj_full) <- all_vars
+    
+    # Insert ASCEND's X adjacency
+    x_indices <- (d_z + 1):total_vars
+    if (nrow(adj_directed) == d_x) {
+      # Convert to undirected skeleton for comparison
+      adj_skeleton <- (adj_directed | t(adj_directed)) * 1
+      adj_full[x_indices, x_indices] <- adj_skeleton
     }
     
-    # Convert to undirected skeleton for comparison
-    adj_skeleton <- (adj_directed | t(adj_directed)) * 1
-    
-    return(adj_skeleton)
+    return(adj_full)
   }, error = function(e) {
     message("ASCEND error: ", e$message)
-    return(matrix(0, d_x, d_x))
+    adj_full <- matrix(0, total_vars, total_vars)
+    rownames(adj_full) <- colnames(adj_full) <- c(paste0("z", 1:d_z), paste0("x", 1:d_x))
+    return(adj_full)
   })
 }
 
 # ============================================================================
-# 4. COMPARISON FRAMEWORK
+# 4. UPDATED COMPARISON FRAMEWORK
 # ============================================================================
 
 compare_all_methods <- function(sim_obj) {
-  # Define methods to compare (excluding redundant ones)
-  methods <- c("ASCEND", "PC","ARACNE", "CLR" ,"GLASSO", "PPCOR", "GENIE3", "Correlation")
+  # Define methods to compare
+  methods <- c("ASCEND", "PC", "ARACNE", "CLR", "GLASSO", "PPCOR", "GENIE3", "Correlation")
   
-  # Get ground truth
+  # Get ground truth (X-to-X subgraph)
   Gtrue <- sim_obj$adj_mat
-  d_x <- ncol(Gtrue)
+  d_z <- sim_obj$params$d_z
+  d_x <- sim_obj$params$d_x
+  
+  # Get X variable names for extraction
+  x_cols <- paste0("x", 1:d_x)
   
   results <- list()
   
   cat("\n" , strrep("=", 70))
-  cat("\nMETHOD COMPARISON: ", d_x, " X variables\n", sep = "")
+  cat("\nMETHOD COMPARISON: ", d_z, " Z + ", d_x, " X variables\n", sep = "")
   cat(strrep("=", 70), "\n")
   
   # Preprocess data appropriately for each method
@@ -398,37 +521,46 @@ compare_all_methods <- function(sim_obj) {
       sim_used <- sim_standard
     }
     
-    # Run method
+    # Run method (now on Z+X data)
     start_time <- Sys.time()
     
-    adj <- switch(method,
-                  "ASCEND" = run_ascend(sim_used),
-                  "PC" = run_pc(sim_used),
-                  "ARACNE" = run_aracne(sim_used),
-                  "CLR" = run_clr(sim_used),
-                  "GLASSO" = run_glasso(sim_used),
-                  "PPCOR" = run_ppcor(sim_used),
-                  "GENIE3" = run_genie3(sim_used),
-                  "Correlation" = run_correlation(sim_used)
+    adj_full <- switch(method,
+                       "ASCEND" = run_ascend(sim_used),
+                       "PC" = run_pc(sim_used),
+                       "ARACNE" = run_aracne(sim_used),
+                       "CLR" = run_clr(sim_used),
+                       "GLASSO" = run_glasso(sim_used),
+                       "PPCOR" = run_ppcor(sim_used),
+                       "GENIE3" = run_genie3(sim_used),
+                       "Correlation" = run_correlation(sim_used)
     )
     
     runtime <- difftime(Sys.time(), start_time, units = "secs")
     
-    # Evaluate
-    if (!is.null(adj) && nrow(adj) == d_x) {
-      metrics <- compare_skeletons(Gtrue, adj)
+    # Extract X-to-X submatrix for evaluation
+    adj_x_submatrix <- extract_x_submatrix(adj_full, x_cols)
+    
+    # Ensure dimensions match
+    if (!is.null(adj_x_submatrix) && 
+        nrow(adj_x_submatrix) == d_x && 
+        ncol(adj_x_submatrix) == d_x) {
+      
+      # Evaluate only on X-to-X subgraph
+      metrics <- compare_skeletons(Gtrue, adj_x_submatrix)
       
       results[[method]] <- list(
-        adjacency = adj,
+        full_adjacency = adj_full,
+        x_adjacency = adj_x_submatrix,
         metrics = metrics,
         runtime = as.numeric(runtime),
-        edges_found = sum(adj[upper.tri(adj)])
+        edges_found = sum(adj_x_submatrix[upper.tri(adj_x_submatrix)])
       )
       
       cat(sprintf("F1=%.3f (%.1fs)", metrics$f1, runtime))
     } else {
       results[[method]] <- list(
-        adjacency = NULL,
+        full_adjacency = adj_full,
+        x_adjacency = NULL,
         metrics = list(f1 = NA, precision = NA, recall = NA),
         runtime = as.numeric(runtime),
         edges_found = 0
@@ -447,19 +579,19 @@ compare_all_methods <- function(sim_obj) {
 }
 
 # ============================================================================
-# 5. BATCH EXPERIMENT WITH STATISTICAL ANALYSIS
+# 5. UPDATED BATCH EXPERIMENT
 # ============================================================================
 
 run_comprehensive_experiment <- function(n_reps = 20,
                                          n = 1000, d_z = 100, d_x = 25,
                                          sparsity = 0.3, signal = 0.3) {
   
-  methods <- c("ASCEND", "PC","ARACNE", "CLR"  , "GLASSO", "PPCOR", "GENIE3", "Correlation")
+  methods <- c("ASCEND", "PC", "ARACNE", "CLR", "GLASSO", "PPCOR", "GENIE3", "Correlation")
   
   cat("\n" , strrep("=", 70))
   cat("\nCOMPREHENSIVE EVALUATION: ", n_reps, " REPLICATIONS\n", sep = "")
-  cat("Parameters: n=", n, ", d_x=", d_x, ", sparsity=", sparsity, 
-      ", signal=", signal, "\n", sep = "")
+  cat("Parameters: n=", n, ", d_z=", d_z, ", d_x=", d_x, 
+      ", sparsity=", sparsity, ", signal=", signal, "\n", sep = "")
   cat(strrep("=", 70), "\n")
   
   # Initialize results storage
@@ -472,12 +604,12 @@ run_comprehensive_experiment <- function(n_reps = 20,
     sim_obj <- sim_dat(
       n = n, d_z = d_z, d_x = d_x,
       sp = sparsity, r2 = signal,
-      lin_pr = 1.0,  # 100% linear
+      lin_pr = 1.0,
       seed = 12345 + rep * 100
     )
     
     true_edges <- sum(sim_obj$adj_mat[upper.tri(sim_obj$adj_mat)])
-    cat(true_edges, " true edges\n", sep = "")
+    cat(true_edges, " true X-to-X edges\n", sep = "")
     
     # Compare methods
     comparison <- compare_all_methods(sim_obj)
@@ -589,8 +721,8 @@ run_comprehensive_experiment <- function(n_reps = 20,
       p1 <- ggplot(all_results, aes(x = Method, y = F1, fill = Method_Class)) +
         geom_boxplot(alpha = 0.8, outlier.shape = NA) +
         geom_jitter(width = 0.2, alpha = 0.3, size = 1) +
-        labs(title = "Skeleton Recovery Performance (F1 Score)",
-             subtitle = paste(n_reps, "replications"),
+        labs(title = "X-to-X Skeleton Recovery Performance (F1 Score)",
+             subtitle = paste(n_reps, "replications | Using Z+X data"),
              x = "Method", y = "F1 Score",
              fill = "Method Class") +
         theme_bw(base_size = 11) +
@@ -609,7 +741,7 @@ run_comprehensive_experiment <- function(n_reps = 20,
         geom_errorbarh(aes(xmin = Recall_mean - F1_sd/2, 
                            xmax = Recall_mean + F1_sd/2), 
                        height = 0.01) +
-        labs(title = "Precision-Recall Tradeoff",
+        labs(title = "Precision-Recall Tradeoff (X-to-X edges)",
              x = "Recall", y = "Precision",
              color = "Method", shape = "Method Class") +
         theme_bw(base_size = 11) +
@@ -621,6 +753,7 @@ run_comprehensive_experiment <- function(n_reps = 20,
         geom_boxplot(alpha = 0.8) +
         scale_y_log10() +
         labs(title = "Computational Runtime (log scale)",
+             subtitle = "All methods use Z+X data",
              x = "Method", y = "Runtime (seconds, log10)",
              fill = "Method Class") +
         theme_bw(base_size = 11) +
@@ -639,7 +772,7 @@ run_comprehensive_experiment <- function(n_reps = 20,
     raw_results = all_results,
     summary = summary_stats,
     n_replications = n_reps,
-    parameters = list(n = n, d_x = d_x, sparsity = sparsity, signal = signal)
+    parameters = list(n = n, d_z = d_z, d_x = d_x, sparsity = sparsity, signal = signal)
   ))
 }
 
@@ -647,31 +780,14 @@ run_comprehensive_experiment <- function(n_reps = 20,
 # 8. MAIN EXECUTION
 # ============================================================================
 
-# Ensure ASCEND function is available
-if (!exists("ascend_fn")) {
-  cat("\n  WARNING: ascend_fn not found. Using dummy implementation for testing.\n")
-  ascend_fn <- function(sim_obj, alpha = 0.05) {
-    d_x <- sim_obj$params$d_x
-    adj <- matrix(0, d_x, d_x)
-    # Simulate reasonable network recovery
-    n_edges <- round(d_x * (d_x - 1) * 0.3 / 2)  # ~30% of possible edges
-    for (i in 1:n_edges) {
-      from <- sample(1:d_x, 1)
-      to <- sample(setdiff(1:d_x, from), 1)
-      adj[from, to] <- 1
-    }
-    return(adj)
-  }
-}
-
 # Run the comprehensive evaluation
-cat("\nStarting comprehensive evaluation of ASCEND...\n")
+cat("\nStarting comprehensive evaluation of ASCEND with Z+X data...\n")
 
 results <- run_comprehensive_experiment(
   n_reps = 5,      # Start with 5, increase to 20-30 for paper
   n = 1000,
-  d_z = 100,
-  d_x = 25,
+  d_z = 50,        
+  d_x = 15,       
   sparsity = 0.3,
   signal = 0.3
 )
@@ -679,7 +795,7 @@ results <- run_comprehensive_experiment(
 # Final summary
 if (!is.null(results$summary)) {
   cat("\n" , strrep("=", 70))
-  cat("\nFINAL RANKING BY F1 SCORE\n")
+  cat("\nFINAL RANKING BY F1 SCORE (X-to-X skeleton recovery)\n")
   cat(strrep("=", 70), "\n")
   
   for (i in 1:nrow(results$summary)) {
@@ -693,5 +809,5 @@ if (!is.null(results$summary)) {
 }
 
 # Save results for reproducibility
-saveRDS(results, file = "ascend_comparison_results.rds")
-cat("\nResults saved to 'ascend_comparison_results.rds'\n")
+saveRDS(results, file = "ascend_comparison_results_zx.rds")
+cat("\nResults saved to 'ascend_comparison_results_zx.rds'\n")
