@@ -1,0 +1,37 @@
+"n","method","metric","mean","ci_lo","ci_hi"
+256,"Plain PC (X)","auprc_ratio",1.41,1.246,1.607
+256,"Plain PC (X)","dir_acc",0.298,0.199,0.4
+256,"Plain PC (X)","f1",0.361,0.319,0.402
+256,"Plain PC (Z+X)","auprc_ratio",1.719,1.519,1.963
+256,"Plain PC (Z+X)","dir_acc",0.09,0.017,0.185
+256,"Plain PC (Z+X)","f1",0.334,0.277,0.385
+256,"ASCEND-PC","auprc_ratio",1.676,1.479,1.878
+256,"ASCEND-PC","dir_acc",0.535,0.379,0.684
+256,"ASCEND-PC","f1",0.334,0.276,0.394
+1024,"Plain PC (X)","auprc_ratio",1.504,1.321,1.713
+1024,"Plain PC (X)","dir_acc",0.244,0.178,0.326
+1024,"Plain PC (X)","f1",0.386,0.339,0.433
+1024,"Plain PC (Z+X)","auprc_ratio",2.108,1.695,2.559
+1024,"Plain PC (Z+X)","dir_acc",0.032,0,0.066
+1024,"Plain PC (Z+X)","f1",0.473,0.421,0.526
+1024,"ASCEND-PC","auprc_ratio",1.826,1.5,2.217
+1024,"ASCEND-PC","dir_acc",0.673,0.595,0.765
+1024,"ASCEND-PC","f1",0.398,0.328,0.469
+4096,"Plain PC (X)","auprc_ratio",1.386,1.247,1.538
+4096,"Plain PC (X)","dir_acc",0.163,0.071,0.268
+4096,"Plain PC (X)","f1",0.347,0.317,0.374
+4096,"Plain PC (Z+X)","auprc_ratio",1.902,1.595,2.19
+4096,"Plain PC (Z+X)","dir_acc",0.062,0.011,0.12
+4096,"Plain PC (Z+X)","f1",0.438,0.368,0.503
+4096,"ASCEND-PC","auprc_ratio",1.749,1.446,2.132
+4096,"ASCEND-PC","dir_acc",0.607,0.482,0.733
+4096,"ASCEND-PC","f1",0.448,0.382,0.515
+16384,"Plain PC (X)","auprc_ratio",1.239,1.064,1.44
+16384,"Plain PC (X)","dir_acc",0.222,0.123,0.329
+16384,"Plain PC (X)","f1",0.278,0.213,0.342
+16384,"Plain PC (Z+X)","auprc_ratio",1.973,1.605,2.418
+16384,"Plain PC (Z+X)","dir_acc",0.009,0,0.027
+16384,"Plain PC (Z+X)","f1",0.478,0.399,0.548
+16384,"ASCEND-PC","auprc_ratio",1.865,1.6,2.128
+16384,"ASCEND-PC","dir_acc",0.753,0.625,0.862
+16384,"ASCEND-PC","f1",0.423,0.349,0.49

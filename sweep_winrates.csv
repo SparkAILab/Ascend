@@ -1,0 +1,25 @@
+"n","metric","comparison","wins","ties","losses"
+256,"auprc_ratio","ASCEND-PC vs Plain PC (X)",8,0,2
+256,"auprc_ratio","ASCEND-PC vs Plain PC (Z+X)",5,0,5
+1024,"auprc_ratio","ASCEND-PC vs Plain PC (X)",7,0,3
+1024,"auprc_ratio","ASCEND-PC vs Plain PC (Z+X)",2,2,6
+4096,"auprc_ratio","ASCEND-PC vs Plain PC (X)",7,0,3
+4096,"auprc_ratio","ASCEND-PC vs Plain PC (Z+X)",3,0,7
+16384,"auprc_ratio","ASCEND-PC vs Plain PC (X)",10,0,0
+16384,"auprc_ratio","ASCEND-PC vs Plain PC (Z+X)",6,0,4
+256,"dir_acc","ASCEND-PC vs Plain PC (X)",8,0,2
+256,"dir_acc","ASCEND-PC vs Plain PC (Z+X)",9,0,1
+1024,"dir_acc","ASCEND-PC vs Plain PC (X)",10,0,0
+1024,"dir_acc","ASCEND-PC vs Plain PC (Z+X)",10,0,0
+4096,"dir_acc","ASCEND-PC vs Plain PC (X)",9,0,1
+4096,"dir_acc","ASCEND-PC vs Plain PC (Z+X)",10,0,0
+16384,"dir_acc","ASCEND-PC vs Plain PC (X)",10,0,0
+16384,"dir_acc","ASCEND-PC vs Plain PC (Z+X)",10,0,0
+256,"f1","ASCEND-PC vs Plain PC (X)",4,0,6
+256,"f1","ASCEND-PC vs Plain PC (Z+X)",4,2,4
+1024,"f1","ASCEND-PC vs Plain PC (X)",5,0,5
+1024,"f1","ASCEND-PC vs Plain PC (Z+X)",1,0,9
+4096,"f1","ASCEND-PC vs Plain PC (X)",9,0,1
+4096,"f1","ASCEND-PC vs Plain PC (Z+X)",6,0,4
+16384,"f1","ASCEND-PC vs Plain PC (X)",9,0,1
+16384,"f1","ASCEND-PC vs Plain PC (Z+X)",3,0,7

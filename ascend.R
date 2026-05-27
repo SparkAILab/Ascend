@@ -1,365 +1,465 @@
-# ======================================================================
-# Load required packages
-# ======================================================================
-library(bnlearn)
-library(dplyr)
-library(qvalue)
-library(foreach)
-library(data.table)
-library(pcalg)
-library(RBGL)
-library(matrixStats)
-library(glmnet)
-library(lightgbm)
-library(tidyverse)
-library(doMC)
-registerDoMC(16)
-set.seed(123, kind = "L'Ecuyer-CMRG")
+## ASCEND: Ancestral Scalable Causal discovEry via iNherited Descent.
+#######################################################################
 
-# ======================================================================
-# Helper functions 
-# ======================================================================
+## Constraint-based ancestral causal discovery for two-tier systems
+## with a known causal ordering: a background tier Z precedes a
+## foreground tier X.
+##
+## Input:
+##   sim_obj : list with element $dat (a data.table whose columns
+##             follow the convention z1, ..., z_dz, x1, ..., x_dx).
+##
+## Output:
+##   d_x x d_x matrix M over the foreground variables with entries in
+##   {0, 0.5, 1, NA}:
+##     M[i, j] = 1    Xi is a strict ancestor of Xj
+##     M[i, j] = 0.5  Xi is a non-descendant of Xj (weak precedence)
+##     M[i, j] = 0    Xi and Xj are independent given S
+##     M[i, j] = NA   pair could not be resolved given the available
+##                    conditioning sets and data
+##
+## Orientation rules applied to a pair (Xi, Xj) with conditioning
+## set S and helper W in S, Sw = S \ {W}:
+##
+##   R3 (independence):
+##     Xi _|_ Xj | S  =>  Xi ~ Xj
+##
+##   R1 (deactivation):
+##     W _|_/ Xj | Sw  and  W _|_ Xj | Sw u {Xi}  =>  Xi -< Xj
+##     Conditioning on Xi screens W from Xj, so Xi mediates the path
+##     from W to Xj.
+##
+##   R2 (activation):
+##     W _|_ Xi | Sw  and  W _|_/ Xi | Sw u {Xj}  =>  Xi <= Xj
+##     Conditioning on Xj opens a path between W and Xi, so Xj is a
+##     collider or descendant of a collider on that path.
+##
+## Markov-blanket alpha schedule:
+##   The MB oracle's significance level alpha_mb is annealed from
+##   alpha_mb_start (liberal) to alpha_mb_floor (conservative) by a
+##   geometric factor alpha_decay per iteration. Liberal alpha early
+##   minimises omissions from the conditioning set; commission
+##   errors are tolerated because a slightly oversized valid
+##   conditioning set does not invalidate the rules under
+##   faithfulness.
+##
+## Vote aggregation:
+##   The oracle pseudocode commits orientation on the first valid W.
+##   In finite samples a single W may fire spuriously. We collect
+##   votes from every W in S, take the plurality winner subject to
+##   min_votes, and break direction conflicts (R1 vs R1_rev, R2 vs
+##   R2_rev) using the total -log(p) evidence across the significant
+##   tests. Under perfect tests this recovers the oracle behaviour.
+
+suppressPackageStartupMessages({
+  library(bnlearn)
+  library(data.table)
+  library(matrixStats)
+  library(igraph)
+})
+
+## --- Graph utilities ------------------------------------------------------
 
 clean_matrix_adj <- function(mat) {
-  mat2 <- as.matrix(mat)
-  mat2[is.na(mat2)] <- 0
-  mat2[mat2 != 0] <- 1
-  return(mat2)
-}
-
-reachable_nodes_adj <- function(adj, start) {
-  adj <- clean_matrix_adj(adj)
-  n <- nrow(adj)
-  visited <- rep(FALSE, n)
-  dfs <- function(v) {
-    visited[v] <<- TRUE
-    nbrs <- which(adj[v, ] != 0)
-    for (u in nbrs) {
-      if (!visited[u]) dfs(u)
-    }
-  }
-  dfs(start)
-  which(visited)
+  m <- as.matrix(mat); m[is.na(m)] <- 0; m[m != 0] <- 1; m
 }
 
 topo_sort_adj <- function(adj) {
-  adj <- clean_matrix_adj(adj)
-  n <- nrow(adj)
-  if (n == 0) return(integer(0))
-  A <- (adj != 0) * 1
-  indeg <- colSums(A)
-  indeg[is.na(indeg)] <- 0
-  
-  order <- integer(0)
-  zeros <- sort(which(indeg == 0))
-  
+  adj <- clean_matrix_adj(adj); n <- nrow(adj); if (n == 0) return(integer(0))
+  A <- (adj != 0) * 1; indeg <- colSums(A); indeg[is.na(indeg)] <- 0
+  ord <- integer(0); zeros <- sort(which(indeg == 0))
   while (length(zeros) > 0) {
-    v <- zeros[1]
-    zeros <- zeros[-1]
-    order <- c(order, v)
+    v <- zeros[1]; zeros <- zeros[-1]; ord <- c(ord, v)
     nbrs <- which(A[v, ] != 0)
-    if (length(nbrs) > 0) {
-      for (u in nbrs) {
-        indeg[u] <- indeg[u] - 1
-        if (indeg[u] == 0) zeros <- sort(unique(c(zeros, u)))
-      }
+    for (u in nbrs) {
+      indeg[u] <- indeg[u] - 1
+      if (indeg[u] == 0) zeros <- sort(unique(c(zeros, u)))
     }
     A[v, nbrs] <- 0
   }
-  
-  if (length(order) != n) return(NULL)
-  return(order)
+  if (length(ord) != n) return(NULL); ord
 }
 
-is_dag_adj <- function(adj) {
-  !is.null(topo_sort_adj(adj))
-}
+is_dag_adj <- function(adj) !is.null(topo_sort_adj(adj))
 
-sort_ancestral_matrix <- function(adj_matrix) {
-  if (is.null(adj_matrix) || nrow(adj_matrix) == 0) return(adj_matrix)
-  
-  support <- adj_matrix
-  support[is.na(support)] <- 0
-  support[!(support %in% c(0.5, 1))] <- 0
-  support[support != 0] <- 1
-  
-  ord <- topo_sort_adj(support)
-  if (is.null(ord)) {
-    warning("Graph is not a DAG; returning original matrix")
-    return(adj_matrix)
-  }
-  
-  sorted <- adj_matrix[ord, ord, drop = FALSE]
-  diag(sorted) <- NA
-  sorted[lower.tri(sorted)] <- 0
-  return(sorted)
+sort_ancestral_matrix <- function(m) {
+  if (is.null(m) || nrow(m) == 0) return(m)
+  sup <- m; sup[is.na(sup)] <- 0
+  sup[!(sup %in% c(0.5, 1))] <- 0; sup[sup != 0] <- 1
+  ord <- topo_sort_adj(sup)
+  if (is.null(ord)) { warning("Not a DAG"); return(m) }
+  s <- m[ord, ord, drop = FALSE]; diag(s) <- NA
+  s[lower.tri(s)] <- 0; s
 }
 
 build_constraint_adj <- function(m) {
-  n <- nrow(m)
-  A <- matrix(0, n, n)
-  rownames(A) <- rownames(m)
-  colnames(A) <- colnames(m)
-  for (j in seq_len(n)) {
-    for (i in seq_len(n)) {
-      if (i == j) next
-      if (is.na(m[j, i])) next
-      if (m[j, i] == 1 || m[j, i] == 0.5) A[i, j] <- 1
-    }
+  n <- nrow(m); A <- matrix(0, n, n)
+  rownames(A) <- rownames(m); colnames(A) <- colnames(m)
+  for (j in seq_len(n)) for (i in seq_len(n)) {
+    if (i == j || is.na(m[j, i])) next
+    if (m[j, i] == 1 || m[j, i] == 0.5) A[i, j] <- 1
   }
-  return(A)
+  A
 }
 
 permute_to_lower <- function(m) {
-  get_valid_permutation <- function(m) {
-    A <- build_constraint_adj(m)
-    ord <- topo_sort_adj(A)
-    if (is.null(ord)) stop("Ancestry matrix contains cycles")
-    return(as.numeric(ord))
-  }
-  perm <- get_valid_permutation(m)
-  return(m[perm, perm])
+  ord <- topo_sort_adj(build_constraint_adj(m))
+  if (is.null(ord)) stop("Ancestry matrix contains cycles")
+  m[as.numeric(ord), as.numeric(ord)]
 }
 
-try_edge_update <- function(adj, i, j, val_ij, val_ji, iter) {
-  test_adj <- adj
-  test_adj[i, j] <- val_ij
-  test_adj[j, i] <- val_ji
-  bin <- (test_adj == 1 | test_adj == 0.5) * 1
-  if (is_dag_adj(bin)) {
-    return(list(adj = test_adj, success = TRUE))
-  } else {
-    return(list(adj = adj, success = FALSE))
-  }
+# Attempt to update entry (i, j) of the ancestral matrix. The edge is
+# accepted only if the resulting graph is acyclic.
+try_edge_update <- function(adj, i, j, val_ij, val_ji) {
+  t <- adj; t[i, j] <- val_ij; t[j, i] <- val_ji
+  b <- ((t == 1 | t == 0.5) * 1); b[is.na(b)] <- 0
+  if (is_dag_adj(b)) return(list(adj = t, success = TRUE))
+  list(adj = adj, success = FALSE)
 }
 
-test_r1r2 <- function(W, xj, S_w, xi, data, alpha = 0.05) {
-  vars <- unique(c(xj, W, S_w, xi))
+## --- Conditional independence test ---------------------------------------
+##
+## Partial F-test for H0: target _|_ query | cond_set, via a
+## likelihood-ratio comparison between nested linear models. Small
+## p-value rejects independence.
+
+ci_test_pval <- function(target, query, cond_set, data, min_n = 10) {
+  vars <- unique(c(target, query, cond_set))
   miss <- setdiff(vars, colnames(data))
-  if (length(miss)) return(list(beta_0 = NA, beta_1 = NA, pval_0 = NA, pval_1 = NA,
-                                p_value_diff = NA, r1 = FALSE, r2 = FALSE))
-  form0 <- as.formula(paste(xj, "~", paste(c(W, S_w), collapse = "+")))
-  form1 <- as.formula(paste(xj, "~", paste(c(W, S_w, xi), collapse = "+")))
-  f0 <- lm(form0, data)
-  f1 <- lm(form1, data)
-  coef0 <- summary(f0)$coefficients
-  coef1 <- summary(f1)$coefficients
-  if (!(W %in% rownames(coef0)) || !(W %in% rownames(coef1))) {
-    return(list(beta_0 = NA, beta_1 = NA, pval_0 = NA, pval_1 = NA,
-                p_value_diff = NA, r1 = FALSE, r2 = FALSE))
-  }
-  beta_0 <- coef0[W, 1]; se_0 <- coef0[W, 2]; pval_0 <- coef0[W, 4]
-  beta_1 <- coef1[W, 1]; se_1 <- coef1[W, 2]; pval_1 <- coef1[W, 4]
-  se_diff <- sqrt(se_0^2 + se_1^2)
-  nu_combined <- se_diff^4 / (se_0^4/f0$df.residual + se_1^4/f1$df.residual)
-  t_stat <- (beta_0 - beta_1) / se_diff
-  p_value_diff <- 2 * pt(-abs(t_stat), df = nu_combined)
-  r1 <- (pval_0 <= alpha && pval_1 > alpha)
-  r2 <- (pval_0 > alpha && pval_1 <= alpha)
-  return(list(beta_0 = beta_0, beta_1 = beta_1, pval_0 = pval_0,
-              pval_1 = pval_1, p_value_diff = p_value_diff, r1 = r1, r2 = r2))
+  if (length(miss) > 0) return(NA)
+  if (nrow(data) < min_n) return(NA)
+  
+  sub <- data[, vars, drop = FALSE]
+  good <- sapply(sub, function(col) {
+    v <- na.omit(col); length(unique(v)) > 1 && sd(v) > 0
+  })
+  sub <- sub[, as.logical(good), drop = FALSE]
+  if (!(target %in% colnames(sub)) || !(query %in% colnames(sub))) return(NA)
+  
+  cs <- intersect(cond_set, colnames(sub))
+  
+  rhs0 <- if (length(cs) > 0) paste(cs, collapse = "+") else "1"
+  rhs1 <- if (length(cs) > 0) paste(c(cs, query), collapse = "+") else query
+  
+  f0 <- tryCatch(lm(as.formula(paste(target, "~", rhs0)), data = sub),
+                 error = function(e) NULL)
+  f1 <- tryCatch(lm(as.formula(paste(target, "~", rhs1)), data = sub),
+                 error = function(e) NULL)
+  if (is.null(f0) || is.null(f1)) return(NA)
+  
+  res <- tryCatch(anova(f0, f1), error = function(e) NULL)
+  if (is.null(res)) return(NA)
+  res$`Pr(>F)`[2]
 }
 
-# ======================================================================
-# ASCEND function 
-# ======================================================================
+## --- Main routine --------------------------------------------------------
 
-ascend_fn <- function(sim_obj, maxiter = 9, alpha = 0.05, fdr_correction = TRUE) {
-  dat <- sim_obj$dat
-  z <- as.matrix(dplyr::select(dat, starts_with('z')))
-  x <- as.matrix(dplyr::select(dat, starts_with('x')))
-  d_x <- ncol(x)
+ascend_fn <- function(sim_obj,
+                      maxiter        = 10,
+                      alpha          = 0.05,
+                      alpha_mb_start = 0.20,
+                      alpha_mb_floor = 0.05,
+                      alpha_decay    = 0.70,
+                      fdr_correction = TRUE,
+                      min_votes      = 1) {
+  
+  dat   <- sim_obj$dat
+  d_x   <- length(grep("^x", colnames(dat)))
   xlabs <- paste0('x', seq_len(d_x))
   
-  robust_scale_safe <- function(x) {
+  # Median/MAD scaling, robust to outliers; falls back to mean/sd if the
+  # MAD is zero, and adds tiny jitter if both are degenerate.
+  scale_robust <- function(x) {
     if (all(is.na(x))) return(x)
-    med <- median(x, na.rm = TRUE)
-    mad_val <- mad(x, na.rm = TRUE)
-    if (mad_val == 0 || is.na(mad_val)) {
-      sd_val <- sd(x, na.rm = TRUE)
-      if (sd_val == 0 || is.na(sd_val)) {
-        x <- x + rnorm(length(x), 0, 1e-6)
-        sd_val <- sd(x, na.rm = TRUE)
+    m <- mad(x, na.rm = TRUE)
+    if (is.na(m) || m == 0) {
+      s <- sd(x, na.rm = TRUE)
+      if (is.na(s) || s == 0) {
+        x <- x + rnorm(length(x), 0, 1e-6); s <- sd(x, na.rm = TRUE)
       }
-      return((x - mean(x, na.rm = TRUE)) / sd_val)
+      return((x - mean(x, na.rm = TRUE)) / s)
     }
-    return((x - med) / mad_val)
+    (x - median(x, na.rm = TRUE)) / m
   }
   
   dataAll <- as.data.frame(dat)
-  for (col in colnames(dataAll)) dataAll[[col]] <- robust_scale_safe(dataAll[[col]])
+  for (col in colnames(dataAll)) dataAll[[col]] <- scale_robust(dataAll[[col]])
   dataAll[is.infinite(as.matrix(dataAll))] <- 0
   dataAll[is.na(dataAll)] <- 0
   
   z_cols <- grep("^z", colnames(dataAll), value = TRUE)
-  x_cols <- grep("^x", colnames(dataAll), value = TRUE)
-  mb_list <- vector("list", length = d_x); names(mb_list) <- xlabs
   
-  set.seed(42)
-  for (i in seq_len(d_x)) {
-    node_i <- xlabs[i]
-    node_sd <- sd(dataAll[[node_i]], na.rm = TRUE)
-    if (is.na(node_sd) || node_sd == 0) {
-      mb_list[[node_i]] <- character(0)
-      next
-    }
-    sub_df <- dataAll[, c(z_cols, node_i), drop = FALSE]
-    col_vars <- sapply(sub_df, function(col) sd(col, na.rm = TRUE))
-    if (any(col_vars == 0)) sub_df <- sub_df[, col_vars > 0, drop = FALSE]
-    if (ncol(sub_df) < 2) {
-      mb_list[[node_i]] <- character(0)
-      next
-    }
-    mb_list[[node_i]] <- tryCatch({
-      learn.mb(sub_df, node = node_i, method = "iamb", test = "zf", alpha = alpha)
-    }, error = function(e) character(0))
+  # Marginal Z screening. The two-tier assumption guarantees any subset
+  # of Z is a valid set of non-descendants, so we retain Z with any
+  # marginal signal (BH-corrected threshold of 0.30) plus a minimum
+  # count so that the initial conditioning set is never empty.
+  min_z_keep <- max(3, ceiling(length(z_cols) * 0.10))
+  
+  prescreen_z <- function(node_i, liberal_thresh = 0.30) {
+    if (sd(dataAll[[node_i]], na.rm = TRUE) == 0) return(character(0))
+    pv <- sapply(z_cols, function(zc) {
+      ct <- tryCatch(cor.test(dataAll[[node_i]], dataAll[[zc]]),
+                     error = function(e) NULL)
+      if (is.null(ct)) 1 else ct$p.value
+    })
+    adj_pv <- p.adjust(pv, method = "BH")
+    keep   <- which(adj_pv < liberal_thresh)
+    if (length(keep) < min_z_keep)
+      keep <- order(pv)[1:min(min_z_keep, length(pv))]
+    z_cols[keep]
   }
   
-  adj_new <- matrix(NA, d_x, d_x); diag(adj_new) <- NA
-  rownames(adj_new) <- colnames(adj_new) <- xlabs
+  # IAMB Markov-blanket learning at significance alpha_mb, with guards
+  # against degenerate columns.
+  learn_mb_safe <- function(node_i, candidates, alpha_mb) {
+    if (length(candidates) == 0 || sd(dataAll[[node_i]], na.rm = TRUE) == 0)
+      return(character(0))
+    sub <- dataAll[, c(candidates, node_i), drop = FALSE]
+    good <- sapply(sub, function(col) {
+      v <- na.omit(col); length(unique(v)) > 1 && sd(v) > 0
+    })
+    sub <- sub[, as.logical(good), drop = FALSE]
+    if (ncol(sub) < 2 || !(node_i %in% colnames(sub))) return(character(0))
+    tryCatch(
+      learn.mb(sub, node = node_i, method = "iamb", test = "zf",
+               alpha = alpha_mb),
+      error = function(e) character(0)
+    )
+  }
+  
+  ## Initial MB at iteration 0. T_X^(0) = Z; alpha_mb is at its most
+  ## liberal value.
+  alpha_mb_current <- alpha_mb_start
+  
+  mb_list <- vector("list", d_x); names(mb_list) <- xlabs
+  for (i in seq_len(d_x)) {
+    node_i  <- xlabs[i]
+    z_cands <- prescreen_z(node_i)
+    mb_list[[node_i]] <- learn_mb_safe(node_i, z_cands, alpha_mb_current)
+  }
+  
+  M <- matrix(NA, d_x, d_x); diag(M) <- NA
+  rownames(M) <- colnames(M) <- xlabs
   
   converged <- FALSE; iter <- 0
+  
   while (!converged && iter <= maxiter) {
-    iter <- iter + 1
-    converged <- TRUE
-    pval_info <- list(); pval_index <- 1
+    iter <- iter + 1; converged <- TRUE
+    
+    alpha_mb_current <- max(alpha_mb_floor,
+                            alpha_mb_start * alpha_decay ^ (iter - 1))
+    
+    cat(sprintf("Iteration %d | alpha_mb=%.3f | NA pairs remaining: %d\n",
+                iter, alpha_mb_current,
+                sum(is.na(M[upper.tri(M)]))))
+    
+    ## --- R3: pairwise CI tests on unresolved pairs ---------------------
+    ## S_ij = mb[xi] u mb[xj], excluding xi and xj themselves.
+    pval_info <- list(); pidx <- 1
     
     for (i in 2:d_x) {
-      for (j in 1:(i-1)) {
-        if (is.na(adj_new[i, j])) {
-          xi <- xlabs[i]; xj <- xlabs[j]
-          mb_i <- mb_list[[xi]]; mb_j <- mb_list[[xj]]
-          S <- setdiff(union(mb_i, mb_j), c(xi, xj))
-          S_data <- dataAll[, intersect(c(xi, xj, S), colnames(dataAll)), drop = FALSE]
-          
-          keep <- sapply(S_data, function(col) {
-            if(all(is.na(col))) return(FALSE)
-            vals <- unique(na.omit(col))
-            length(vals) > 1
-          })
-          keep <- as.logical(keep)
-          if (length(keep) == ncol(S_data)) S_data <- S_data[, keep, drop = FALSE]
-          
-          # Sync S with remaining columns
-          S <- intersect(S, colnames(S_data))
-          
-          if (!(xi %in% colnames(S_data)) || !(xj %in% colnames(S_data))) { converged <- FALSE; next }
-          if (nrow(S_data) < 10) { converged <- FALSE; next }
-          
-          # ---------- SAFE FORMULA CONSTRUCTION ----------
-          if (length(S) == 0) {
-            fit_null <- lm(as.formula(paste(xj, "~ 1")), data = S_data)
-            fit_alt  <- lm(as.formula(paste(xj, "~", xi)), data = S_data)
-          } else {
-            rhs0 <- paste(S, collapse = " + ")
-            rhs1 <- paste(c(S, xi), collapse = " + ")
-            fit_null <- lm(as.formula(paste(xj, "~", rhs0)), data = S_data)
-            fit_alt  <- lm(as.formula(paste(xj, "~", rhs1)), data = S_data)
-          }
-          
-          test_res <- tryCatch(anova(fit_null, fit_alt), error = function(e) NULL)
-          pval <- if(!is.null(test_res)) test_res$`Pr(>F)`[2] else NA
-          if (!is.na(pval)) {
-            pval_info[[pval_index]] <- list(i=i,j=j,xi=xi,xj=xj,pval=pval,S=S,S_data=S_data)
-            pval_index <- pval_index + 1
-          }
+      for (j in 1:(i - 1)) {
+        if (!is.na(M[i, j])) next
+        
+        xi <- xlabs[i]; xj <- xlabs[j]
+        S <- setdiff(union(mb_list[[xi]], mb_list[[xj]]), c(xi, xj))
+        S <- intersect(S, colnames(dataAll))
+        
+        pv <- ci_test_pval(xj, xi, S, dataAll)
+        if (!is.na(pv)) {
+          pval_info[[pidx]] <- list(i = i, j = j, xi = xi, xj = xj,
+                                    pval = pv, S = S)
+          pidx <- pidx + 1
+        } else {
+          converged <- FALSE
         }
       }
     }
     
     if (length(pval_info) > 0) {
-      pvals <- sapply(pval_info, function(x) x$pval)
-      adj_pvals <- if(fdr_correction) p.adjust(pvals, method = "BH") else pvals
+      pvals     <- sapply(pval_info, function(x) x$pval)
+      adj_pvals <- if (fdr_correction) p.adjust(pvals, method = "BH") else pvals
       
       for (idx in seq_along(pval_info)) {
-        info <- pval_info[[idx]]; i <- info$i; j <- info$j
-        xi <- info$xi; xj <- info$xj; S <- info$S; S_data <- info$S_data
+        info <- pval_info[[idx]]
+        i <- info$i; j <- info$j; xi <- info$xi; xj <- info$xj; S <- info$S
         adj_pval <- adj_pvals[idx]
         
+        # R3: independence -> Xi ~ Xj.
         if (adj_pval > alpha) {
-          adj_new[i,j] <- 0; adj_new[j,i] <- 0
-          converged <- FALSE
-        } else {
-          for (W in S) {
-            Sw <- setdiff(S, W)
-            act <- test_r1r2(W,xj,Sw,xi,dataAll,alpha)
-            deact <- test_r1r2(W,xi,Sw,xj,dataAll,alpha)
-            result <- NULL
-            if (!is.null(deact) && is.list(deact) && deact$r1) result <- try_edge_update(adj_new,i,j,1,0,iter)
-            else if (!is.null(act) && is.list(act) && act$r1) result <- try_edge_update(adj_new,i,j,0,1,iter)
-            else if (!is.null(deact) && is.list(deact) && deact$r2) result <- try_edge_update(adj_new,i,j,0,0.5,iter)
-            else if (!is.null(act) && is.list(act) && act$r2) result <- try_edge_update(adj_new,i,j,0.5,0,iter)
-            if (!is.null(result) && result$success) { adj_new <- result$adj; converged <- FALSE; break }
+          M[i, j] <- 0; M[j, i] <- 0; converged <- FALSE; next
+        }
+        
+        # Dependent: collect R1 and R2 votes across all W in S.
+        if (length(S) == 0) next
+        
+        votes    <- c(r1 = 0L,  r1_rev = 0L,  r2 = 0L,  r2_rev = 0L)
+        evidence <- c(r1 = 0.0, r1_rev = 0.0, r2 = 0.0, r2_rev = 0.0)
+        
+        for (W in S) {
+          Sw <- setdiff(S, W)
+          p_wj_no_i <- ci_test_pval(W, xj, Sw,         dataAll)
+          p_wj_wi_i <- ci_test_pval(W, xj, c(Sw, xi),  dataAll)
+          p_wi_no_j <- ci_test_pval(W, xi, Sw,         dataAll)
+          p_wi_wi_j <- ci_test_pval(W, xi, c(Sw, xj),  dataAll)
+          
+          r1f  <- !is.na(p_wj_no_i) && !is.na(p_wj_wi_i) &&
+            p_wj_no_i <= alpha && p_wj_wi_i > alpha
+          r1rf <- !is.na(p_wi_no_j) && !is.na(p_wi_wi_j) &&
+            p_wi_no_j <= alpha && p_wi_wi_j > alpha
+          r2f  <- !is.na(p_wi_no_j) && !is.na(p_wi_wi_j) &&
+            p_wi_no_j > alpha  && p_wi_wi_j <= alpha
+          r2rf <- !is.na(p_wj_no_i) && !is.na(p_wj_wi_i) &&
+            p_wj_no_i > alpha  && p_wj_wi_i <= alpha
+          
+          votes["r1"]     <- votes["r1"]     + r1f
+          votes["r1_rev"] <- votes["r1_rev"] + r1rf
+          votes["r2"]     <- votes["r2"]     + r2f
+          votes["r2_rev"] <- votes["r2_rev"] + r2rf
+          
+          if (r1f  && !is.na(p_wj_no_i)) evidence["r1"]     <- evidence["r1"]     - log(p_wj_no_i + 1e-300)
+          if (r1rf && !is.na(p_wi_no_j)) evidence["r1_rev"] <- evidence["r1_rev"] - log(p_wi_no_j + 1e-300)
+          if (r2f  && !is.na(p_wi_wi_j)) evidence["r2"]     <- evidence["r2"]     - log(p_wi_wi_j + 1e-300)
+          if (r2rf && !is.na(p_wj_wi_i)) evidence["r2_rev"] <- evidence["r2_rev"] - log(p_wj_wi_i + 1e-300)
+        }
+        
+        # Resolve direction conflicts by total -log(p) evidence; exact
+        # ties leave the pair unresolved.
+        if (votes["r1"] > 0 && votes["r1_rev"] > 0) {
+          if      (evidence["r1"]     > evidence["r1_rev"]) votes["r1_rev"] <- 0L
+          else if (evidence["r1_rev"] > evidence["r1"])     votes["r1"]     <- 0L
+          else { votes["r1"] <- 0L; votes["r1_rev"] <- 0L }
+        }
+        if (votes["r2"] > 0 && votes["r2_rev"] > 0) {
+          if      (evidence["r2"]     > evidence["r2_rev"]) votes["r2_rev"] <- 0L
+          else if (evidence["r2_rev"] > evidence["r2"])     votes["r2"]     <- 0L
+          else { votes["r2"] <- 0L; votes["r2_rev"] <- 0L }
+        }
+        # Strict orientation supersedes weak in the same direction.
+        if (votes["r1"]     > 0) votes["r2"]     <- 0L
+        if (votes["r1_rev"] > 0) votes["r2_rev"] <- 0L
+        
+        best <- max(votes)
+        if (best < min_votes) next
+        
+        # Try strict first, then weak; accept the first update that
+        # leaves M acyclic.
+        result <- NULL
+        if (votes["r1"] >= min_votes && votes["r1"] >= votes["r1_rev"])
+          result <- try_edge_update(M, i, j, 1, 0)
+        if ((is.null(result) || !result$success) &&
+            votes["r1_rev"] >= min_votes)
+          result <- try_edge_update(M, i, j, 0, 1)
+        if ((is.null(result) || !result$success) &&
+            votes["r2"] >= min_votes && votes["r2"] >= votes["r2_rev"])
+          result <- try_edge_update(M, i, j, 0.5, 0)
+        if ((is.null(result) || !result$success) &&
+            votes["r2_rev"] >= min_votes)
+          result <- try_edge_update(M, i, j, 0, 0.5)
+        
+        if (!is.null(result) && result$success) {
+          M <- result$adj; converged <- FALSE
+        }
+      }
+    }
+    
+    ## --- Transitive closure --------------------------------------------
+    ## Xi -< Xk and Xk -< Xj imply Xi -< Xj.
+    done <- FALSE
+    while (!done) {
+      done <- TRUE
+      for (k in seq_len(d_x)) {
+        ancs  <- which(M[, k] == 1)
+        descs <- which(M[k, ] == 1)
+        if (!length(ancs) || !length(descs)) next
+        for (anc in ancs) for (desc in descs) {
+          if (anc == desc) next
+          if (is.na(M[anc, desc]) || M[anc, desc] != 1) {
+            res <- try_edge_update(M, anc, desc, 1, 0)
+            if (res$success) { M <- res$adj; done <- FALSE; converged <- FALSE }
           }
         }
       }
     }
     
-    bin_current <- (clean_matrix_adj(adj_new) == 1 | clean_matrix_adj(adj_new) == 0.5) * 1
-    if (!is_dag_adj(bin_current)) stop("Cycle detected")
-    # closure (keep upper-triangular)
-    closure <- FALSE
-    while(!closure) {
-      closure <- TRUE
-      for(i in seq_len(ncol(adj_new))) {
-        m <- which(adj_new[,i]==1)
-        if(length(m)>0) {
-          submat <- adj_new[, m, drop=FALSE]
-          if(any(submat==1, na.rm=TRUE)) {
-            e_idx <- unique(which(submat==1, arr.ind=TRUE)[,1])
-            for(row in e_idx) {
-              if(is.na(adj_new[row,i]) || adj_new[row,i]!=1) { adj_new[row,i]<-1; closure<-FALSE }
-            }
-          }
-        }
+    ## --- Symmetry closure ---------------------------------------------
+    ## Xi <= Xj together with Xj <= Xi contradicts acyclicity, so the
+    ## pair is reset to independent.
+    for (i in seq_len(d_x)) for (j in seq_len(d_x)) {
+      if (i == j) next
+      if (!is.na(M[i, j]) && !is.na(M[j, i]) &&
+          M[i, j] == 0.5 && M[j, i] == 0.5) {
+        M[i, j] <- 0; M[j, i] <- 0; converged <- FALSE
       }
     }
     
-    for(i in seq_len(d_x)) {
-      node_i <- xlabs[i]; old_mb <- mb_list[[node_i]]
-      non_desc <- which((adj_new[,i]==1) | (adj_new[,i]==0.5))
-      A_i <- intersect(union(old_mb, xlabs[non_desc]), colnames(dataAll))
-      sub_df2 <- dataAll[, intersect(c(A_i, node_i), colnames(dataAll)), drop=FALSE]
-      keep2 <- sapply(sub_df2,function(col){ vals<-unique(na.omit(col)); length(vals)>1 })
-      keep2 <- as.logical(keep2)
-      if(length(keep2)==ncol(sub_df2)) sub_df2 <- sub_df2[,keep2,drop=FALSE]
-      if(ncol(sub_df2)>=2 && node_i %in% colnames(sub_df2)) {
-        new_mb <- tryCatch({ learn.mb(sub_df2, node=node_i, method="iamb", test="zf", alpha=alpha) }, error=function(e) old_mb)
-      } else { new_mb <- old_mb }
-      if(!setequal(new_mb, old_mb)) converged<-FALSE
+    bin <- clean_matrix_adj(M); bin[is.na(bin)] <- 0
+    if (!is_dag_adj(bin)) stop(sprintf("Cycle detected at iteration %d", iter))
+    
+    ## --- Update non-descendant sets and recompute MBs ------------------
+    ## T_Xi shrinks each iteration toward the true parent set: the Z
+    ## variables currently in Xi's MB plus any X confirmed as
+    ## ancestors of Xi. Fallback to the marginal Z prescreen if no Z
+    ## parents have been found yet.
+    for (i in seq_len(d_x)) {
+      node_i  <- xlabs[i]; old_mb <- mb_list[[node_i]]
+      
+      z_parents_Xi <- intersect(mb_list[[node_i]], z_cols)
+      if (length(z_parents_Xi) == 0) z_parents_Xi <- prescreen_z(node_i)
+      
+      confirmed_x_anc <- xlabs[which(M[, i] == 1 | M[, i] == 0.5)]
+      T_Xi <- setdiff(unique(c(z_parents_Xi, confirmed_x_anc)), node_i)
+      T_Xi <- intersect(T_Xi, colnames(dataAll))
+      
+      new_mb <- learn_mb_safe(node_i, T_Xi, alpha_mb_current)
+      
+      if (!setequal(new_mb, old_mb)) converged <- FALSE
       mb_list[[node_i]] <- new_mb
+    }
+    
+  }
+  
+  ## --- Post-loop R3 pass --------------------------------------------
+  ## After the iterative loop some pairs may remain NA. R3 is applied
+  ## once more using the final MBs: a pair is set to 0 only if the CI
+  ## test now finds independence. Dependent but unoriented pairs are
+  ## left as NA: the algorithm does not force an orientation that the
+  ## rules did not establish.
+  for (i in 2:d_x) {
+    for (j in 1:(i - 1)) {
+      if (!is.na(M[i, j])) next
+      xi <- xlabs[i]; xj <- xlabs[j]
+      S  <- setdiff(union(mb_list[[xi]], mb_list[[xj]]), c(xi, xj))
+      S  <- intersect(S, colnames(dataAll))
+      pv <- ci_test_pval(xj, xi, S, dataAll)
+      if (!is.na(pv) && pv > alpha) {
+        M[i, j] <- 0; M[j, i] <- 0
+      }
     }
   }
   
-  if(!all(is.na(adj_new))) {
-    tryCatch({
-      adj_new <- permute_to_lower(adj_new)
-      adj_new <- sort_ancestral_matrix(adj_new)
-    }, error=function(e){ warning("Final normalization failed:", e$message) })
+  for (i in seq_len(d_x)) for (j in seq_len(d_x)) {
+    if (i == j) next
+    if (!is.na(M[i, j]) && !is.na(M[j, i]) &&
+        M[i, j] == 0.5 && M[j, i] == 0.5) {
+      M[i, j] <- 0; M[j, i] <- 0
+    }
   }
-  return(adj_new)
+  
+  # Topologically sort the final matrix for presentation.
+  if (!all(is.na(M))) {
+    tryCatch({
+      M <- permute_to_lower(M)
+      M <- sort_ancestral_matrix(M)
+    }, error = function(e) warning("Final normalisation failed: ", e$message))
+  }
+  
+  M
 }
 
-# ======================================================================
-# Example run
-# ======================================================================
-
-sim_obj <- sim_dat(
-  n = 200,
-  d_z = 30,
-  d_x = 7,
-  rho = 0.5,
-  r2 = 0.7,
-  lin_pr = 1,
-  sp = 0.5,
-  method = 'er',
-  pref = NA
-)
-
-amat_ascend <- ascend_fn(sim_obj)
-amat_true <- sim_obj$adj_mat
-
-cat("Ground truth adjacency matrix (amat_true):\n")
-print(amat_true)
-cat("\nEstimated adjacency matrix from ASCEND (amat_ascend):\n")
-print(amat_ascend)
+## --- Example run ---------------------------------------------
+##
+## # source("simulation.R")
+## # sim_obj <- sim_dat(n = 500, d_z = 15, d_x = 6, r2 = 0.5,
+## #                    sp = 0.3, p_cross = 0.15, x_effect = 0.9, seed = 123)
+## # M <- ascend_fn(sim_obj)
