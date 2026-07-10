@@ -1,55 +1,42 @@
 #!/bin/bash
-#SBATCH --job-name=ascend_bench
-#SBATCH --array=1-81
-#SBATCH --output=logs/job_%a_%j.out
-#SBATCH --error=logs/job_%a_%j.err
-#SBATCH --time=72:00:00
-#SBATCH --mem=64G
-#SBATCH --cpus-per-task=1
-#SBATCH --partition=cpu
-
 # =============================================================================
-# SLURM array job for ASCEND benchmark on KCL CREATE HPC
+# submit.sh — one SLURM array task = one (combo, n) pair of hpc_run.R
 #
-# Submit with:   sbatch submit.sh
-# Monitor with:  squeue -u $USER
-# Check logs:    tail -f logs/job_1_*.out
+# Quick uniform submission (same time/mem for every task):
+#     mkdir -p logs results && sbatch submit.sh
 #
-# Notes:
-#   - 81 array jobs, one per parameter combination
-#   - 48h wall time (generous; most jobs will finish in 4-12h)
-#   - 32GB RAM: sufficient for d_x=80, d_z=240, n=131072
-#     (data matrix ~335MB, methods add overhead; 32GB is safe)
-#   - 1 CPU per job (all methods are single-threaded here;
-#     GENIE3 nCores=1 is set in hpc_run.R)
-#   - Jobs are restartable: completed replicates are skipped on rerun
+# Preferred: let submit_all.sh override --array/--time/--mem per n-band:
+#     bash submit_all.sh
 #
-# If some jobs run out of time, resubmit the same script — completed
-# replicates will be skipped automatically.
+# Command-line flags passed to sbatch OVERRIDE the #SBATCH lines below, which is
+# exactly how submit_all.sh sizes each band.
 # =============================================================================
+#SBATCH --job-name=ascend
+#SBATCH --output=logs/job_%A_%a.out
+#SBATCH --error=logs/job_%A_%a.err
+#SBATCH --array=1-729           # default grid = 81 combos x 9 n-values;
+                                # `Rscript hpc_run.R count` prints the true total,
+                                # and submit_all.sh overrides this per band.
+#SBATCH --cpus-per-task=1        # methods run serially; 1 core packs best
+#SBATCH --mem=8G                 # generic default; large-n bands need more
+#SBATCH --time=12:00:00          # generic default; large-n bands need more
+# #SBATCH --partition=<your_partition>    # uncomment + set if required
+# #SBATCH --account=<your_account>        # uncomment + set if required
 
-# Fail immediately on any error in this shell script
-set -euo pipefail
+set -uo pipefail                  # NB: no -e (module functions can return nonzero)
 
-# Create log directory if it doesn't exist
+module load r/4.3.1               # <-- match `module avail r` on the cluster
+
 mkdir -p logs results
 
-# Load R module — adjust version to what is available on CREATE
-# Check available versions with: module avail R
-module load r/4.5.1-gcc-13.2.0-withx-rmath-standalone-python-3.11.6
+echo "Host    : $(hostname)"
+echo "Task    : ${SLURM_ARRAY_TASK_ID:-NA}  (job ${SLURM_ARRAY_JOB_ID:-NA})"
+echo "Start   : $(date)"
+echo "----------------------------------------------------------------------"
 
-# Print job info for debugging
-echo "=============================="
-echo "Job array index : ${SLURM_ARRAY_TASK_ID}"
-echo "Job ID          : ${SLURM_JOB_ID}"
-echo "Node            : $(hostname)"
-echo "Start time      : $(date)"
-echo "Working dir     : $(pwd)"
-echo "=============================="
+Rscript hpc_run.R "${SLURM_ARRAY_TASK_ID}"
+rc=$?
 
-# Run the R script with this array index
-Rscript hpc_run.R ${SLURM_ARRAY_TASK_ID}
-
-echo "=============================="
-echo "End time: $(date)"
-echo "=============================="
+echo "----------------------------------------------------------------------"
+echo "End     : $(date)   (exit ${rc})"
+exit ${rc}
