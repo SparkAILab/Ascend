@@ -1,4 +1,4 @@
-# data sources: Expression: GSE117850 on GEO
+# data sources: Expression: GSE117850 on GEO and download GSE117850_DGRP_GEO_Table_4_Gene_Male_Line_Means.txt.gz
 # Genotype: https://zenodo.org/records/14871341 \\ scroll down and download the data.tar.gz which includes the necessary geno files.
 
 
@@ -124,11 +124,14 @@ real_obj <- list(
   )
 )
 
+
+
+
 # 9. RUN ASCEND (CLEAN DATA)
-source("ascend_fn.R")
+#source("ascend.R")
 
 cat("\nRunning ASCEND on CLEAN data...\n")
-result <- ascend_fn(real_obj, alpha = 0.05, fdr_correction = TRUE, maxiter = 10)
+result <- ascend(real_obj, alpha = 0.05, alpha_mb = 0.05, fdr = TRUE, min_votes = 1)
 
 
 
@@ -141,8 +144,7 @@ result <- ascend_fn(real_obj, alpha = 0.05, fdr_correction = TRUE, maxiter = 10)
 # ============================================
 library(tidyverse)
 
-# Load your results
-result <- real_obj_result  # Your ASCEND adjacency matrix
+
 
 # ============================================
 # 1. BASIC STATISTICS (FIXED)
@@ -269,6 +271,20 @@ print(head(node_stats[order(-node_stats$total_edges), ], 10))
 write.csv(node_stats, "ascend_node_statistics.csv", row.names = FALSE)
 cat("\nNode statistics saved: ascend_node_statistics.csv\n")
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # ============================================
 # 4. QUICK VISUALIZATION (SIMPLE)
 # ============================================
@@ -364,3 +380,206 @@ sink()
 
 cat("\n=== ANALYSIS COMPLETE ===\n")
 cat("Full report saved: ascend_analysis_report.txt\n")
+
+
+
+
+
+
+# ======================================================================
+#  DYNAMICALLY IDENTIFY HUBS (INDEX-CORRECTED)
+# ======================================================================
+cat("\n=== EXTRACTING EMPIRICAL HUBS WITH REAL FLYBASE IDs ===\n")
+
+# 1. Compute strict causal out-degrees
+causal_out_degrees <- rowSums(result == 1, na.rm = TRUE)
+
+# 2. Extract the index number from placeholders (e.g., "x170" -> 170)
+generic_names <- names(causal_out_degrees)
+gene_indices  <- as.numeric(gsub("x", "", generic_names))
+
+# 3. Map indices back to the true FlyBase IDs stored in metadata
+true_flybase_ids <- real_obj$metadata$gene_ids[gene_indices]
+
+# 4. Build the clean hub dataframe
+df_hubs <- data.frame(
+  generic_id = generic_names,
+  gene_id    = true_flybase_ids, # This now contains actual FBgn IDs!
+  out_degree = as.numeric(causal_out_degrees),
+  stringsAsFactors = FALSE
+)
+
+# Sort to isolate the top drivers
+df_hubs <- df_hubs[order(-df_hubs$out_degree), ]
+
+cat("Top discovered regulators mapped to FlyBase IDs:\n")
+print(head(df_hubs, 10))
+
+# ======================================================================
+#  GENOMIC CHROMOSOME MAPPING VIA BIOMART
+# ======================================================================
+cat("\nConnecting to Ensembl BioMart for chromosome coordinates...\n")
+library(biomaRt)
+library(ggplot2)
+library(dplyr)
+
+tryCatch({
+  mart <- useMart("ensembl", dataset = "dmelanogaster_gene_ensembl")
+  
+  # Query using genuine FlyBase IDs
+  coords <- getBM(
+    attributes = c("flybase_gene_id", "external_gene_name", "chromosome_name", "start_position"),
+    filters    = "flybase_gene_id",
+    values     = df_hubs$gene_id,
+    mart       = mart
+  )
+  
+  colnames(coords) <- c("gene_id", "gene_symbol", "chromosome", "position")
+  df_genomic_hubs <- merge(df_hubs, coords, by = "gene_id", all.x = TRUE)
+  
+  # Fallback for empty symbols
+  df_genomic_hubs$gene_symbol[is.na(df_genomic_hubs$gene_symbol) | df_genomic_hubs$gene_symbol == ""] <- 
+    df_genomic_hubs$gene_id[is.na(df_genomic_hubs$gene_symbol) | df_genomic_hubs$gene_symbol == ""]
+  
+  # Filter out scaffolds, focus on major chromosomal arms
+  df_genomic_hubs <- df_genomic_hubs %>%
+    filter(chromosome %in% c("2L", "2R", "3L", "3R", "X", "4")) %>%
+    mutate(chromosome = factor(chromosome, levels = c("X", "2L", "2R", "3L", "3R", "4"))) %>%
+    arrange(chromosome, position)
+  
+  write.csv(df_genomic_hubs, "ascend_discovered_hubs.csv", row.names = FALSE)
+  cat("Genomic positions mapped! Saved to 'ascend_discovered_hubs.csv'\n")
+  
+  cat("\nTop Chromosomal Hubs:\n")
+  print(head(df_genomic_hubs %>% arrange(-out_degree), 10))
+  
+  # ======================================================================
+  #  GENERATE CAUSAL MANHATTAN PLOT
+  # ======================================================================
+  cat("Generating Manhattan plot (manhattan.pdf)...\n")
+  
+  pdf("manhattan.pdf", width = 11, height = 5)
+  p <- ggplot(df_genomic_hubs, aes(x = position / 1e6, y = out_degree, color = chromosome)) +
+    geom_point(aes(size = out_degree), alpha = 0.8) +
+    geom_segment(aes(x = position / 1e6, xend = position / 1e6, y = 0, yend = out_degree), alpha = 0.4) +
+    facet_grid(. ~ chromosome, scales = "free_x", space = "free_x") +
+    scale_color_brewer(palette = "Set2") +
+    labs(
+      title = "Genomic Architecture of Discovered Causal Influence (ASCEND)",
+      x = "Genomic Position (Mb)",
+      y = "Causal Out-Degree (Targets Regulated)",
+      size = "Out-degree"
+    ) +
+    theme_minimal() +
+    theme(
+      legend.position = "right",
+      panel.border = element_rect(color = "grey85", fill = NA),
+      strip.background = element_rect(fill = "grey95", color = "grey85"),
+      panel.grid.minor = element_blank()
+    )
+  print(p)
+  dev.off()
+  cat("Plot successfully generated and saved to 'manhattan.pdf'\n")
+  
+}, error = function(e) {
+  cat("BioMart connection failed. Error message:", e$message, "\n")
+  cat("Saving non-mapped empirical results to 'ascend_discovered_hubs_raw.csv'\n")
+  write.csv(df_hubs, "ascend_discovered_hubs_raw.csv", row.names = FALSE)
+})
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ======================================================================
+# GENERATE CLASSIC SINGLE-PANEL GENOMIC MAP (DYNAMIC RANGE FIX)
+# ======================================================================
+cat("Generating classic style genomic map...\n")
+
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+
+# 1. Prepare continuous coordinates across combined chromosomes
+df_classic <- df_genomic_hubs %>%
+  filter(chromosome %in% c("X", "2L", "2R", "3L", "3R")) %>%
+  mutate(chromosome = factor(chromosome, levels = c("X", "2L", "2R", "3L", "3R"))) %>%
+  group_by(chromosome) %>%
+  arrange(position) %>%
+  ungroup()
+
+# Create a continuous index for the X-axis so arms sit side-by-side
+chrom_lengths <- df_classic %>% 
+  group_by(chromosome) %>% 
+  summarise(max_pos = max(position, na.rm = TRUE)) %>% 
+  mutate(offset = lag(cumsum(as.numeric(max_pos)), default = 0))
+
+df_classic <- df_classic %>%
+  inner_join(chrom_lengths, by = "chromosome") %>%
+  mutate(global_position = (position + offset) / 1e6)
+
+# Calculate midpoints for the X-axis chromosome labels
+chrom_labels <- df_classic %>%
+  group_by(chromosome) %>%
+  summarise(center = mean(global_position))
+
+# 2. DYNAMICALLY DEFINE THRESHOLDS BASED ON DATA DETECTED
+max_out_degree <- max(df_classic$out_degree, na.rm = TRUE)
+
+# If it's a high-degree run, label top 10 hubs; if it's lower, label those >= 5
+if (max_out_degree > 10) {
+  df_labels <- df_classic %>% arrange(-out_degree) %>% head(10)
+  y_max_limit <- max_out_degree * 1.1 # Give 10% breathing room at the top
+} else {
+  df_labels <- df_classic %>% filter(gene_symbol %in% c("CG15034", "CG17928", "CG13323", "CG6839", "Gba1a") | out_degree >= 5)
+  y_max_limit <- 8.5
+}
+
+# 3. Plotting using the clean base-R aesthetic
+pdf("manhattan_classic_style.pdf", width = 9, height = 7)
+
+p_classic <- ggplot(df_classic, aes(x = global_position, y = out_degree, color = chromosome)) +
+  geom_point(size = 3, alpha = 0.8) +
+  # Label the specific master regulators cleanly without overlaps
+  geom_text_repel(
+    data = df_labels, 
+    aes(label = gene_symbol),
+    color = "black", 
+    size = 3.5,
+    box.padding = 0.6,
+    point.padding = 0.4,
+    max.overlaps = 15,
+    fontface = "plain",
+    family = "serif"
+  ) +
+  scale_x_continuous(breaks = chrom_labels$center, labels = chrom_labels$chromosome) +
+  scale_y_continuous(limits = c(0, y_max_limit)) +
+  # Custom color palette matching the distinct blocks in your target PDF
+  scale_color_manual(values = c("X" = "#E41A1C", "2L" = "#377EB8", "2R" = "#4DAF4A", "3L" = "#984EA3", "3R" = "#FF7F00")) +
+  labs(
+    x = "Chromosome",
+    y = "Causal Out-degree (Number of Targets)"
+  ) +
+  theme_classic() + 
+  theme(
+    legend.position = "none",
+    text = element_text(family = "serif", size = 14),
+    # Fixed deprecated 'size' to 'linewidth'
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    axis.title.y = element_text(margin = margin(t = 0, r = 10, b = 0, l = 0))
+  )
+
+print(p_classic)
+dev.off()
+
+cat("Classic style plot successfully refreshed with all points captured!\n")

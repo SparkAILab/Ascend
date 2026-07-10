@@ -43,7 +43,7 @@ C_CBL    = "#E69F00"   # orange
 C_TIMEOUT= "#C44E52"   # red
 GREY     = "#5A5A5A"
 
-CSV_PATH = sys.argv[1] if len(sys.argv) > 1 else "/mnt/user-data/uploads/results_12.csv"
+CSV_PATH = sys.argv[1] if len(sys.argv) > 1 else "/mnt/user-data/uploads/results_ascend_vs_cbl.csv"
 OUT_DIR  = sys.argv[2] if len(sys.argv) > 2 else "/mnt/user-data/outputs"
 
 d = pd.read_csv(CSV_PATH)

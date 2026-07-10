@@ -124,13 +124,13 @@ topo_order <- function(A) {
   if (length(ord) != k) NULL else ord
 }
 
-is_dag <- function(A) !is.null(topo_order(A))
+is_dag_custom <- function(A) !is.null(topo_order(A))
 
 # write M[i,j]=v_ij, M[j,i]=v_ji only if the precedence graph stays acyclic
 try_edge <- function(M, i, j, v_ij, v_ji) {
   T <- M; T[i, j] <- v_ij; T[j, i] <- v_ji
   b <- ((T == 1 | T == 0.5) * 1); b[is.na(b)] <- 0
-  if (is_dag(b)) list(M = T, ok = TRUE) else list(M = M, ok = FALSE)
+  if (is_dag_custom(b)) list(M = T, ok = TRUE) else list(M = M, ok = FALSE)
 }
 
 

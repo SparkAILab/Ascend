@@ -1,13 +1,33 @@
+## ======================================================================
 ## Synthetic benchmark for ASCEND against GENIE3, ARACNe, and WGCNA.
 ##
-## Requires sim_dat() and ascend_fn() to be defined in the global
-## environment; source ascend_fn.R before sourcing this file.
+## Requires sim_dat() and ascend() to be defined in the global
+## environment; source ascend.R before sourcing this file.
 ##
 ## Outputs:
 ##   benchmark_v2_main_raw.csv   per-replicate metrics
 ##   benchmark_v2_wilcoxon.csv   paired Wilcoxon tests, BH corrected
 ##
 ## Adjust N_REP to control replicate count.
+##
+## ----------------------------------------------------------------------
+## Changes vs the previous version, to match the updated ascend.R:
+##   (1) wrap_aracne() indexed sim_obj$dat with data.table syntax
+##       (`[, xlabs, with = FALSE]`). The updated sim_dat() returns $dat
+##       as a plain data.frame, so that line errored with
+##       "unused argument (with = FALSE)" on every replicate. Now uses
+##       base-R data.frame indexing (`[, xlabs, drop = FALSE]`), wrapped
+##       in as.data.frame() so it is correct for both a data.frame and a
+##       data.table.
+##   (2) The parallel worker export list named the OLD ascend internals
+##       (topo_sort_adj, ci_test_pval, ...) which no longer exist and were
+##       silently dropped. The updated ascend() depends on topo_order,
+##       is_dag, try_edge, ci_pval and iamb; these are now exported so the
+##       %dopar% workers can actually find them.
+##   (3) wrap_ascend() now calls ascend(..., verbose = FALSE); the updated
+##       ascend() reports progress via message(), which capture.output()
+##       does not intercept, so this keeps the benchmark log clean.
+## ======================================================================
 
 N_REP <- 50L
 
@@ -22,8 +42,8 @@ suppressPackageStartupMessages({
 
 N_CORES <- max(1L, min(detectCores() - 1L, 20L))
 
-if (!exists("ascend_fn") || !exists("sim_dat")) {
-  stop("ascend_fn or sim_dat not found. Source ascend_fn.R first.")
+if (!exists("ascend") || !exists("sim_dat")) {
+  stop("ascend or sim_dat not found. Source ascend.R first.")
 }
 
 ## --- Ground truth ---------------------------------------------------------
@@ -181,7 +201,9 @@ ascend_direction_acc <- function(M, xlabs, A_anc) {
 
 wrap_ascend <- function(sim_obj) {
   tryCatch({
-    invisible(capture.output(M <- ascend_fn(sim_obj), type = "output"))
+    invisible(capture.output(
+      M <- suppressMessages(ascend(sim_obj, verbose = FALSE)),
+      type = "output"))
     M
   }, error = function(e) {
     p <- sim_obj$params$d_x; labs <- paste0("x", seq_len(p))
@@ -208,7 +230,9 @@ wrap_aracne <- function(sim_obj) {
   all_labs <- colnames(sim_obj$dat)
   xlabs    <- paste0("x", seq_len(sim_obj$params$d_x)); p <- length(xlabs)
   Xg_all   <- t(as.matrix(sim_obj$dat)); rownames(Xg_all) <- all_labs
-  X_only   <- as.matrix(sim_obj$dat[, xlabs, with = FALSE])
+  # sim_dat() returns $dat as a data.frame; as.data.frame() keeps this
+  # correct whether $dat is a data.frame or a data.table.
+  X_only   <- as.matrix(as.data.frame(sim_obj$dat)[, xlabs, drop = FALSE])
   n_samp   <- nrow(sim_obj$dat)
   n_bins   <- max(3L, min(10L, round(sqrt(n_samp) / 2)))
   
@@ -380,6 +404,9 @@ run_full <- function(conditions, n_rep, d_z = 20L, d_x = 15L,
     on.exit(stopImplicitCluster())
   }
   
+  # Functions the workers need in scope. These are the CURRENT ascend.R
+  # internals (topo_order/is_dag/try_edge/ci_pval/iamb) plus the benchmark
+  # helpers; only those that actually exist are exported.
   worker_fns <- c(
     "run_one_rep", "prepare_gt", "transitive_closure",
     "compute_auroc", "compute_aupr", "aupr_baseline",
@@ -387,11 +414,9 @@ run_full <- function(conditions, n_rep, d_z = 20L, d_x = 15L,
     "ascend_score_matrix", "ascend_binary_skeleton",
     "ascend_coverage", "ascend_direction_acc",
     "wrap_ascend", "wrap_genie3", "wrap_aracne", "wrap_wgcna",
-    "ascend_fn", "sim_dat",
-    "clean_matrix_adj", "topo_sort_adj", "is_dag_adj",
-    "sort_ancestral_matrix", "build_constraint_adj",
-    "permute_to_lower", "try_edge_update", "ci_test_pval",
-    "normalize_to_sorted_ancestral"
+    "ascend", "sim_dat",
+    "topo_order", "is_dag", "try_edge", "ci_pval", "iamb",
+    "true_ancestral"
   )
   worker_fns <- worker_fns[sapply(worker_fns, exists)]
   
@@ -595,18 +620,13 @@ sanity_res <- run_full(
 if (nrow(sanity_res) == 0L) {
   stop("Sanity check returned no rows; halting before main run.")
 }
-cat(sprintf("Sanity check produced %d rows.\n", nrow(sanity_res)))
 
-cat("\nStep 2: main run\n")
-main_conds <- CJ(
-  n  = c(1000L, 2000L),
-  sp = c(0.5, 0.7, 0.9),
-  r2 = c(0.5, 0.7)
-)
-cat(sprintf("Grid: %d conditions x %d reps = %d simulations\n",
-            nrow(main_conds), N_REP, nrow(main_conds) * N_REP))
-
-res_main <- run_full(
+# Main parameter grid. Edit as needed.
+cat("\nStep 2: main grid\n")
+main_conds <- CJ(n  = c(1000L, 2000L),
+                 sp = c(0.5, 0.7, 0.9),
+                 r2 = c(0.5, 0.7))
+main_res <- run_full(
   conditions = main_conds,
   n_rep      = N_REP,
   d_z = 20L, d_x = 15L,
@@ -616,18 +636,12 @@ res_main <- run_full(
   parallel  = TRUE
 )
 
-cat("\nStep 3: per-cell summary tables\n")
-print_all_cells(res_main)
+fwrite(main_res, "benchmark_v2_main_raw.csv")
+print_all_cells(main_res)
 
-cat("\nStep 4: paired Wilcoxon tests (BH corrected)\n")
-wlx_aupr <- wilcoxon_tests(res_main, "aupr")
-wlx_f1   <- wilcoxon_tests(res_main, "f1")
-cat("\nAUPR, ASCEND vs each competitor:\n")
-print(wlx_aupr)
-cat("\nF1 at matched K, ASCEND vs each competitor:\n")
-print(wlx_f1)
-wlx_all <- rbind(wlx_aupr, wlx_f1)
-
-cat("\nStep 5: writing output files\n")
-fwrite(res_main, "benchmark_v2_p5_main_raw.csv")
-fwrite(wlx_all,  "benchmark_v2_p5_wilcoxon.csv")
+wilcox_all <- rbindlist(lapply(
+  c("aupr", "auroc", "f1"),
+  function(mn) wilcoxon_tests(main_res, mn)
+), use.names = TRUE, fill = TRUE)
+fwrite(wilcox_all, "benchmark_v2_wilcoxon.csv")
+cat("\nWrote benchmark_v2_main_raw.csv and benchmark_v2_wilcoxon.csv\n")
