@@ -227,6 +227,10 @@ iamb <- function(target, pool, C, n, alpha, max_cond, ci = ci_pval) {
 #     n_sweeps        outer iterations until convergence
 #   and attribute "pair_p": the p-value of the last R3 (pairwise) test of
 #   each pair, a continuous score for AUPR/AUROC
+#   and attributes "rule", "rule_sweep", "rule_votes": for every pair, the
+#   step that last set it (R1, R2, R3, transitivity, symmetry, R3_final;
+#   NA = unresolved), the sweep in which that happened, and for R1/R2 the
+#   number of agreeing witnesses
 # ----------------------------------------------------------------------
 
 ascend <- function(sim_obj,
@@ -288,6 +292,16 @@ ascend <- function(sim_obj,
   M  <- matrix(NA_real_, d_x, d_x, dimnames = list(xlabs, xlabs))
   last_pool <- if (cond_set == "guarded") z_pool else list()      # pool behind each current blanket
   Pp <- matrix(NA_real_, d_x, d_x, dimnames = list(xlabs, xlabs))  # latest R3 p-value per pair
+  # provenance: which step last set each pair, the sweep it happened in, and
+  # the number of agreeing (de)activation witnesses behind an R1/R2 commit
+  Rule  <- matrix(NA_character_, d_x, d_x, dimnames = list(xlabs, xlabs))
+  Sweep <- matrix(NA_integer_,   d_x, d_x, dimnames = list(xlabs, xlabs))
+  Votes <- matrix(NA_integer_,   d_x, d_x, dimnames = list(xlabs, xlabs))
+  mark <- function(i, j, rule, sweep, v = NA_integer_) {
+    Rule[i, j]  <<- Rule[j, i]  <<- rule
+    Sweep[i, j] <<- Sweep[j, i] <<- as.integer(sweep)
+    Votes[i, j] <<- Votes[j, i] <<- as.integer(v)
+  }
   
   # Guarded conditioning set: union of nearest ancestors, keeping a foreground
   # W only if it is a known non-descendant of BOTH endpoints. Background Z always
@@ -328,7 +342,7 @@ ascend <- function(sim_obj,
         e <- info[[idx]]; i <- e$i; j <- e$j; S <- e$S
         xi <- xlabs[i]; xj <- xlabs[j]
         
-        if (adj[idx] > alpha) { M[i, j] <- 0; M[j, i] <- 0; converged <- FALSE; next }  # R3: ~
+        if (adj[idx] > alpha) { M[i, j] <- 0; M[j, i] <- 0; mark(i, j, "R3", iter); converged <- FALSE; next }  # R3: ~
         if (!length(S)) next
         
         # --- R1 / R2 orientation, tallying votes across all witnesses W ---
@@ -361,13 +375,17 @@ ascend <- function(sim_obj,
         if (votes["r1r"] > 0) votes["r2r"] <- 0L
         
         if (max(votes) < min_votes) next
-        res <- NULL
-        if (votes["r1"]  >= min_votes && votes["r1"] >= votes["r1r"]) res <- try_edge(M, i, j, 1,   0)
-        if ((is.null(res) || !res$ok) && votes["r1r"] >= min_votes)   res <- try_edge(M, i, j, 0,   1)
+        res <- NULL; rule <- NA_character_; nv <- NA_integer_
+        if (votes["r1"]  >= min_votes && votes["r1"] >= votes["r1r"]) {
+          res <- try_edge(M, i, j, 1,   0);  rule <- "R1"; nv <- votes[["r1"]] }
+        if ((is.null(res) || !res$ok) && votes["r1r"] >= min_votes) {
+          res <- try_edge(M, i, j, 0,   1);  rule <- "R1"; nv <- votes[["r1r"]] }
         if ((is.null(res) || !res$ok) && votes["r2"]  >= min_votes &&
-            votes["r2"] >= votes["r2r"])                              res <- try_edge(M, i, j, 0.5, 0)
-        if ((is.null(res) || !res$ok) && votes["r2r"] >= min_votes)   res <- try_edge(M, i, j, 0,   0.5)
-        if (!is.null(res) && res$ok) { M <- res$M; converged <- FALSE }
+            votes["r2"] >= votes["r2r"]) {
+          res <- try_edge(M, i, j, 0.5, 0);  rule <- "R2"; nv <- votes[["r2"]] }
+        if ((is.null(res) || !res$ok) && votes["r2r"] >= min_votes) {
+          res <- try_edge(M, i, j, 0,   0.5); rule <- "R2"; nv <- votes[["r2r"]] }
+        if (!is.null(res) && res$ok) { M <- res$M; mark(i, j, rule, iter, nv); converged <- FALSE }
       }
     }
     
@@ -378,7 +396,7 @@ ascend <- function(sim_obj,
         ancs <- which(M[, k] == 1); descs <- which(M[k, ] == 1)
         for (a in ancs) for (b in descs) if (a != b && (is.na(M[a, b]) || M[a, b] != 1)) {
           r <- try_edge(M, a, b, 1, 0)
-          if (r$ok) { M <- r$M; done <- FALSE; converged <- FALSE }
+          if (r$ok) { M <- r$M; mark(a, b, "transitivity", iter); done <- FALSE; converged <- FALSE }
         }
       }
       if (done) break
@@ -387,7 +405,7 @@ ascend <- function(sim_obj,
     # --- symmetry closure: a <= b AND b <= a  =>  a ~ b ---
     for (i in 1:d_x) for (j in 1:d_x) if (i != j &&
                                           !is.na(M[i, j]) && !is.na(M[j, i]) && M[i, j] == 0.5 && M[j, i] == 0.5) {
-      M[i, j] <- 0; M[j, i] <- 0; converged <- FALSE
+      M[i, j] <- 0; M[j, i] <- 0; mark(i, j, "symmetry", iter); converged <- FALSE
     }
     
     # --- refresh nearest ancestors over the updated non-descendant sets ---
@@ -407,11 +425,11 @@ ascend <- function(sim_obj,
   for (i in 2:d_x) for (j in 1:(i - 1)) if (is.na(M[i, j])) {
     pv <- ci(xlabs[i], xlabs[j], build_S(i, j), C, n, kind = "pair")
     if (!is.na(pv)) Pp[i, j] <- Pp[j, i] <- pv
-    if (!is.na(pv) && pv > alpha) { M[i, j] <- 0; M[j, i] <- 0 }
+    if (!is.na(pv) && pv > alpha) { M[i, j] <- 0; M[j, i] <- 0; mark(i, j, "R3_final", iter) }
   }
   for (i in 1:d_x) for (j in 1:d_x) if (i != j &&
                                         !is.na(M[i, j]) && !is.na(M[j, i]) && M[i, j] == 0.5 && M[j, i] == 0.5) {
-    M[i, j] <- 0; M[j, i] <- 0
+    M[i, j] <- 0; M[j, i] <- 0; mark(i, j, "symmetry", iter)
   }
   
   # reorder to a topological order so strict edges sit above the diagonal
@@ -426,6 +444,9 @@ ascend <- function(sim_obj,
   # continuous edge score for ranking metrics (AUPR/AUROC): the p-value of the
   # last R3 test of each pair, in the same (topological) order as M
   attr(M, "pair_p") <- Pp[rownames(M), colnames(M), drop = FALSE]
+  attr(M, "rule")   <- Rule[rownames(M), colnames(M), drop = FALSE]
+  attr(M, "rule_sweep") <- Sweep[rownames(M), colnames(M), drop = FALSE]
+  attr(M, "rule_votes") <- Votes[rownames(M), colnames(M), drop = FALSE]
   attr(M, "stats") <- list(
     cond_set        = cond_set,
     n_ci_tests      = sum(work$n),

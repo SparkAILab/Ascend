@@ -37,6 +37,13 @@ Rscript analysis/compare_condsets.R   # SEEDS=10 for more seeds
 
 This runs the same algorithm, test and data twice, and only the conditioning set changes. It prints time, CI tests (including how many are Markov-blanket tests), time per test, |S|, and directed P/R/F1 and orientation accuracy for each (n, d_z). Per-run rows go to `analysis/out/compare_condsets.csv`.
 
+## 2b. Tier sensitivity and orientation analysis (base R + ggplot2)
+
+```bash
+SEEDS=5 Rscript analysis/tier_sensitivity.R        # comment 4, ~20 min at 5 seeds (default 10)
+SEEDS=5 Rscript analysis/orientation_analysis.R    # comment 11, ~10 min at 5 seeds (default 20)
+```
+
 ## 3. The four pipelines
 
 | Pipeline | Quick local run | Full run | Output |
