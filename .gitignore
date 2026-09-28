@@ -14,3 +14,4 @@
 /benchmarks/grn_multi/work_test
 /logs_grnm
 grnm_*.out
+__pycache__/
