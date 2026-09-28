@@ -3,7 +3,7 @@
 ## CBL (Watson & Silva) reference implementation used as the comparator.
 ##
 ## Reviewer comments: 6 (CBL is the comparator for the per-test cost analysis)
-## Revision notes: Unchanged algorithm. Only the shah_ss.R path (now found from the repo root) and the core count (env N_CORES, default 16) changed.
+## Revision notes: Unchanged algorithm. Only the shah_ss.R path (now found from the repo root) and the core count (env N_CORES, default 16) changed, and ss_fn returns decision 0 when a rate is never positive (the Shah-Samworth bound is undefined at theta = 0 and crashed on sparse count data); this cannot change any decision the original code reached. cbl_as_ancestral() converts the output to [ancestor, descendant].
 ## How to run: Sourced by benchmarks/cbl/run_ascend_vs_cbl.R and benchmarks/causal_grid/hpc_run.R. Needs pcalg, lightgbm, glmnet, doMC.
 ## Full write-up: docs/REVISION_REPORT.md
 ## ======================================================================
@@ -145,6 +145,11 @@ ss_fn <- function(df, eps, order, rule, B) {
   } 
   # Stability selection parameters
   theta <- mean(r)
+  # No subsample ever selected this relation: nothing is detected at any
+  # tau > 0, and the error bound is undefined at theta = 0 (minD fails), so
+  # the decision is 0. Seen on sparse count data (SERGIO).
+  if (!is.finite(theta) || theta == 0)
+    return(data.table('order' = order, 'rule' = rule, 'decision' = 0))
   ub <- minD(theta, B) * sum(r <= theta)
   tau <- seq_len(2 * B) / (2 * B)
   # Do any features exceed the upper bound?
