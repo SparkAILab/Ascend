@@ -231,6 +231,8 @@ run_one_cell <- function(method, n, d_x, d_z, seed, timeout_sec) {
     ))
   }
   
+  # CBL returns m[descendant, ancestor]; everything here is [ancestor, descendant]
+  if (method == "cbl") est <- cbl_as_ancestral(est)
   if (is.null(rownames(est))) dimnames(est) <- dimnames(amat_true)
   st   <- attr(est, "stats")
   n_ci <- get_ci_tests(method)

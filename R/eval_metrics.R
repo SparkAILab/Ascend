@@ -89,7 +89,10 @@ pair_states <- function(est, truth, pos_values = c(1, 0.5)) {
 eval_ancestral <- function(est, truth, pos_values = c(1, 0.5)) {
   ps <- pair_states(est, truth, pos_values)
   safe_div <- function(x, y) if (y > 0) x / y else NA_real_
-  f1_of    <- function(p, r) if (!is.na(p) && !is.na(r) && p + r > 0) 2 * p * r / (p + r) else NA_real_
+  # F1 = 2 TP / (2 TP + FP + FN): 0 when nothing claimed is right (the
+  # earlier 2PR/(P+R) form returned NA there, which dropped those runs from
+  # averages); NA only when there are no true relations and no claims.
+  f1_counts <- function(tp, n_claims, n_true) if (n_claims + n_true > 0) 2 * tp / (n_claims + n_true) else NA_real_
 
   n_pairs  <- nrow(ps)
   resolved <- ps$est != "NA"
@@ -132,10 +135,10 @@ eval_ancestral <- function(est, truth, pos_values = c(1, 0.5)) {
     coverage = mean(resolved), undetermined = 1 - mean(resolved),
     skel_tp = s_tp, skel_fp = s_fp, skel_fn = s_fn,
     skel_precision = skel_precision, skel_recall = skel_recall,
-    skel_f1 = f1_of(skel_precision, skel_recall),
+    skel_f1 = f1_counts(s_tp, s_tp + s_fp, s_tp + s_fn),
     dir_tp = d_tp, dir_claims = d_claims, n_reversed = n_reversed,
     dir_precision = dir_precision, dir_recall = dir_recall,
-    dir_f1 = f1_of(dir_precision, dir_recall),
+    dir_f1 = f1_counts(d_tp, d_claims, d_true),
     orient_acc = orient_acc, orient_undet = orient_undet,
     orient_n = sum(committed),
     ad_acc = ad_acc,

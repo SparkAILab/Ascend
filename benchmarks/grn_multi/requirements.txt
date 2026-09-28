@@ -1,0 +1,13 @@
+# Python environment for benchmarks/grn_multi (Python >= 3.9)
+#   python -m venv $HOME/venvs/grn_multi && source $HOME/venvs/grn_multi/bin/activate
+#   pip install -r benchmarks/grn_multi/requirements.txt
+# Tested with: numpy 2.4, pandas 2.3, scipy 1.17, scikit-learn 1.9, arboreto 0.1.6,
+#              regdiffusion 0.2.3 (torch 2.14, CPU), astropy 8.0, networkx 3
+numpy
+pandas
+scipy
+scikit-learn
+arboreto==0.1.6
+regdiffusion==0.2.3
+astropy
+networkx

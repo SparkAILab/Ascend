@@ -18,7 +18,8 @@ R/                      the library: every script sources from here
   stats_utils.R           paired differences with CIs, Wilcoxon, BH families
   cbl.R, shah_ss.R        CBL comparator (Watson & Silva)
 benchmarks/
-  grn/                    ASCEND vs GENIE3 / ARACNe / WGCNA   (Tables 1-3, Fig. 2)
+  grn/                    ASCEND vs GENIE3 / ARACNe / WGCNA   (as submitted)
+  grn_multi/              ASCEND vs 15 methods, SEM + SERGIO arms, SLURM jobs (comments 1-3, 9, 11)
   cbl/                    ASCEND vs CBL sweeps                (Fig. 5)
   causal_grid/            81-cell grid vs CBL / GES / LiNGAM / PC on SLURM (Fig. 6)
   */results_submitted/    the results behind the submitted manuscript (never overwritten)
@@ -50,6 +51,7 @@ Rscript tests/test_metrics.R              # scorer and statistics
 Rscript tests/test_sim_tiers.R            # tier-violation simulator
 Rscript tests/test_ascend_regression.R    # revised ascend() == submitted ascend()
 Rscript tests/test_benchmark_smoke.R      # benchmark scoring pipelines (stubs if packages missing)
+Rscript tests/test_grn_multi.R            # multi-method benchmark metrics + orientation conventions
 Rscript R/ascend.R                        # the 8-gene demo
 ```
 

@@ -10,3 +10,7 @@
 /benchmarks/causal_grid/results
 /benchmarks/causal_grid/logs
 .Rhistory
+/benchmarks/grn_multi/work
+/benchmarks/grn_multi/work_test
+/logs_grnm
+grnm_*.out

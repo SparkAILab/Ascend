@@ -44,6 +44,8 @@ Throughout, ASCEND uses its guarded conditioning set, which is the nearest-ances
 | 5 | Under tier violations, ASCEND degrades gradually. Unmeasured background hurts most, with F1 falling from 0.57 to 0.34 at 90% hidden. | Comment 4 has an honest, mostly reassuring answer. |
 | 6 | Most orientation errors are reversals, not abstentions. R1 is reliable (80%). R2 is worse than a coin flip (38%). Transitivity is 61% accurate. Accuracy falls with in-degree and with foreground confounding. The symmetry rule never fires. | Comment 11 has a clear answer, but it exposes a weak rule (R2). |
 | 7 | Switching off the prescreen helps in some cells and hurts in others. | No change of default is needed. Report it as a sensitivity analysis. |
+| 8 | Two comparators were read the wrong way round. pcalg's `as(fit, "amat")` stores the graph transposed, so every PC orientation in the causal grid was scored reversed. CBL returns `m[descendant, ancestor]`, so every CBL orientation in the causal grid and in the ASCEND-vs-CBL benchmark was scored reversed too. | Both are fixed and covered by tests (`tests/test_grn_multi.R`). PC's and CBL's direction metrics must come from the re-run. Their skeleton metrics, coverage and run times were not affected. |
+| 9 | `eval_ancestral()` returned F1 = NA, not 0, when a method's claims were all wrong, which silently dropped those runs from averages. | F1 is now 2TP / (2TP + FP + FN). This only changes runs with no correct claim. |
 
 **The story in one paragraph.** The fixes remove artefacts that were hurting ASCEND, namely one-sided scoring and a simulator that drowned the signal. The fixed ASCEND looks clearly better on the GRN benchmark than the submitted tables showed. But the fixes also remove two claims the paper leaned on: that ASCEND gets faster as the background grows, and that conditioning sets shrink. The defensible scalability story is narrower and still strong. Each test costs the same no matter how large the background is, because it conditions only on nearest ancestors. Total work grows roughly linearly with d_z, and ASCEND remains one to two orders of magnitude faster than CBL. On orientation, the paper should say plainly that ASCEND is excellent on sparse graphs (under 8% of true relations reversed at sp = 0.9). It is much weaker on dense graphs (23–34% reversed), mainly because of R2 and transitivity. Section 10 has the full account.
 
@@ -443,6 +445,7 @@ Every benchmark now uses the fixed simulator (`Z_SCALE=1`), the shared scorer an
 | ASCEND vs CBL | Fig. 5 | `Rscript benchmarks/cbl/run_ascend_vs_cbl.R` (resumable) | `benchmarks/cbl/results/results_ascend_vs_cbl_v2.csv` |
 | causal grid | Fig. 6 | `cd benchmarks/causal_grid && bash submit_all.sh` | `results/job_*/`, then `Rscript hpc_merge.R` → `ascend_benchmark_v3_merged.csv` |
 | causal grid (one task) | | `N_REP=2 METHOD_TIMEOUT=300 Rscript benchmarks/causal_grid/hpc_run.R 1` | same |
+| **multi-method GRN benchmark** (comments 1, 2, 3, 9, 11) | Tables 2–3, Fig. 2, SERGIO table | `bash benchmarks/grn_multi/slurm/setup.sh`, `sbatch benchmarks/grn_multi/slurm/test_pipeline.sbatch`, then `bash benchmarks/grn_multi/slurm/submit_all.sh` | `$GRNM_WORK/results/` (see `benchmarks/grn_multi/README.md`) |
 | tables | | `Rscript analysis/revision_tables.R` | `analysis/out/` |
 | figures | | `Rscript analysis/make_report_figures.R` | `docs/figures/` |
 | Fig. 2 heatmap | | `Rscript benchmarks/grn/plot_f1_heatmap.R` | `benchmarks/grn/results/` |
@@ -528,9 +531,9 @@ The new version is better defended and harder for a reviewer to break. The weak 
 
 | comment | status | where |
 |---|---|---|
-| 1 Baselines (CLR, MRNET, GRNBoost2, PIDC, deep, direction-aware) | not started; the scoring fixes (section 1) are a prerequisite | — |
+| 1 Baselines (CLR, MRNET, GRNBoost2, PIDC, deep, direction-aware) | code done, needs cluster run | `benchmarks/grn_multi/` (16 methods) |
 | 2 AUROC/AUPR everywhere, oriented metrics, SHD | code done, needs re-run | `R/eval_metrics.R`, all benchmarks |
-| 3 BEELINE alignment | not started | — |
+| 3 BEELINE alignment | code done (SERGIO DS1/DS2 arm, BEELINE metrics), needs cluster run | `benchmarks/grn_multi/py/make_sergio.py` |
 | 4 Tier misassignment / incomplete / feedback | done (pilot, 10 seeds) | section 5 |
 | 5 Complexity | empirical side done; the theorem is writing | section 4 |
 | 6 Number of tests vs cost per test | done (pilot) | section 4 |

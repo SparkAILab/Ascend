@@ -337,6 +337,12 @@ cbl_fn <- function(sim_obj, gamma = 0.5, maxiter = 100, B = 50) {
   return(adj1)
 }
 
+# cbl_fn() returns CBL's own convention, m[descendant, ancestor]: m[j, i] = 1
+# means X_i is an ancestor of X_j (see the documentation of dswatson/cbl).
+# Everything else in this repository (ascend(), eval_metrics.R) uses
+# M[ancestor, descendant]. Always pass CBL output through this before scoring.
+cbl_as_ancestral <- function(m) t(as.matrix(m))
+
 ################################################################################
 
 ### EXAMPLE ###

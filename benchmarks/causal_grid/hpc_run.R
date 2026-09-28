@@ -294,7 +294,9 @@ run_cbl <- function(sim_obj, d_x, d_z, n_val) {
     x_cols <- xcols(dat)
     if (is.null(rownames(M_raw))) rownames(M_raw) <- x_cols
     if (is.null(colnames(M_raw))) colnames(M_raw) <- x_cols
-    M_raw
+    # CBL returns m[descendant, ancestor]; score it as [ancestor, descendant].
+    # (Before this fix every CBL orientation was scored reversed.)
+    cbl_as_ancestral(M_raw)
   }, d_x, d_z, n_val)
 }
 
@@ -343,7 +345,10 @@ run_pc <- function(sim_obj, d_x, d_z, n_val, alpha_pc=0.05) {
     if (length(x_kept) < 2L) stop("Fewer than 2 X variables after filtering")
     fit <- pc(suffStat=ss, indepTest=gaussCItest, labels=kept_labels,
               alpha=alpha_pc, verbose=FALSE, maj.rule=TRUE, solve.confl=TRUE)
-    amat <- as(fit, "amat")
+    # as(fit, "amat") is pcalg's "cpdag" amat, stored TRANSPOSED: amat[b, a] = 1
+    # for a -> b. cpdag_to_ancestral() expects [a, b] = 1 for a -> b, so transpose.
+    # (Before this fix every PC orientation was scored reversed.)
+    amat <- t(as(fit, "amat"))
     rownames(amat) <- colnames(amat) <- kept_labels
     cpdag_to_ancestral(amat[x_kept, x_kept, drop=FALSE], x_kept)
   }, d_x, d_z, n_val)
