@@ -286,6 +286,7 @@ ascend <- function(sim_obj,
   else setNames(rep(list(character(0)), d_x), xlabs)
   
   M  <- matrix(NA_real_, d_x, d_x, dimnames = list(xlabs, xlabs))
+  last_pool <- if (cond_set == "guarded") z_pool else list()      # pool behind each current blanket
   Pp <- matrix(NA_real_, d_x, d_x, dimnames = list(xlabs, xlabs))  # latest R3 p-value per pair
   
   # Guarded conditioning set: union of nearest ancestors, keeping a foreground
@@ -393,6 +394,10 @@ ascend <- function(sim_obj,
     if (cond_set == "guarded") for (i in 1:d_x) {
       xi <- xlabs[i]; old <- pa[[xi]]
       pool <- setdiff(unique(c(z_pool[[xi]], xlabs[which(M[, i] %in% c(0.5, 1))])), xi)
+      # IAMB is deterministic given (target, pool), so skip it when the
+      # non-descendant pool has not changed since the last blanket search
+      if (!is.null(last_pool[[xi]]) && setequal(pool, last_pool[[xi]])) next
+      last_pool[[xi]] <- pool
       pa[[xi]] <- nearest_anc(xi, pool)
       if (!setequal(pa[[xi]], old)) converged <- FALSE
     }

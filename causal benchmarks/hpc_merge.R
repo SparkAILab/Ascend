@@ -117,7 +117,7 @@ comp_df <- merged %>%
 print(comp_df, n=Inf)
 
 # ── Save ──────────────────────────────────────────────────────────────────────
-out_file <- "ascend_benchmark_merged.rds"
+out_file <- Sys.getenv("MERGE_OUT", "ascend_benchmark_merged.rds")   # use ascend_benchmark_v3_merged.rds for re-runs
 saveRDS(merged, out_file)
 cat(sprintf("\nSaved: %s\n", out_file))
 write.csv(merged, sub("\\.rds$", ".csv", out_file), row.names=FALSE)

@@ -46,7 +46,7 @@
 ##   (8) Z_SCALE=1 (default) uses the unit-variance background simulator.
 ## ======================================================================
 
-N_REP <- 50L
+N_REP <- as.integer(Sys.getenv("N_REP", "50"))   # e.g. N_REP=3 for a quick local run
 
 suppressPackageStartupMessages({
   library(data.table); library(igraph)
@@ -718,6 +718,8 @@ cat("\nStep 2: main grid\n")
 main_conds <- CJ(n  = c(1000L, 2000L),
                  sp = c(0.5, 0.7, 0.9),
                  r2 = c(0.5, 0.7))
+# GRN_QUICK=1: only the primary cell (Table 1), for a local check
+if (Sys.getenv("GRN_QUICK", "0") == "1") main_conds <- data.table(n = 2000L, sp = 0.9, r2 = 0.7)
 main_res <- run_full(
   conditions = main_conds,
   n_rep      = N_REP,

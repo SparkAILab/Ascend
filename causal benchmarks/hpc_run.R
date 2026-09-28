@@ -62,8 +62,8 @@ suppressPackageStartupMessages({
 
 # ── 1. Constants ──────────────────────────────────────────────────────────────
 
-METHOD_TIMEOUT <- 3600L          # 1 hour per method per replicate
-N_REP          <- 20L
+METHOD_TIMEOUT <- as.integer(Sys.getenv("METHOD_TIMEOUT", "3600"))   # seconds per method per replicate
+N_REP          <- as.integer(Sys.getenv("N_REP", "20"))   # N_REP=2 for a quick local run
 N_VEC          <- 2L^(9:17)      # 512 … 131072.  EDIT THIS LINE to cap (e.g. 2L^(9:16));
 # the array size derives from it automatically.
 P_CROSS        <- 0.20

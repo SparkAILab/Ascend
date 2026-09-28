@@ -16,6 +16,7 @@ This branch adds the evaluation, statistics and ablation code needed for the maj
 - **`ascend.R`**
   - New `cond_set = "full"` ablation. It runs the same algorithm and the same Fisher-z test, but conditions on CBL's full valid set: Z plus the known non-descendants of both endpoints. No Markov-blanket step is run. (Reviewer comment 6.)
   - The result now carries `attr(M, "stats")`: CI-test counts split into pairwise R3, R1/R2 witness, and Markov-blanket tests; time spent inside the CI test; mean and max conditioning-set size; and the number of sweeps. (Reviewer comments 5 and 6.)
+  - Markov-blanket results are cached: IAMB is skipped for a variable whose non-descendant pool hasn't changed since its last search. The output is identical and it takes about half the tests.
   - The result also carries `attr(M, "pair_p")`, the p-value of each pair's last R3 test. It serves as a continuous score for AUPR/AUROC.
   - `sim_dat()` has a new `z_scale` argument, which keeps each background variable at unit variance. With the default (`FALSE`), Z variances grow roughly geometrically along the background DAG, and at d_z of about 30 or more the X→X signal vanishes. In the submitted 81-cell grid, ASCEND averaged 0.1 true positives at d_z = 3·d_x. Re-runs use `z_scale = TRUE`. `FALSE` reproduces the submitted data exactly.
 - **`GRN comparison/ascend_vs_GRN.R`**
