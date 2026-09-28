@@ -28,7 +28,11 @@ Implementation notes
   simulated data let NOTEARS read the causal order off the variances
   (Reisach et al. 2021, "Beware of the simulated DAG"); ASCEND's tests are
   scale-free, so this puts both on the same footing. Default settings:
-  lambda1 = 0.1, least-squares loss, weight threshold 0.3.
+  lambda1 = 0.1, least-squares loss. The weight threshold is 0.1, not the
+  reference 0.3: that value was set for unstandardised weights drawn from
+  +-[0.5, 2], and on standardised data every foreground weight fell below it,
+  so the thresholded graph was empty (test run, lin n=2000: 0 edges at 0.3,
+  directed F1 1.0 at 0.1). Ranking metrics use |W| and do not depend on it.
   Returns a dict with the thresholded graph and |W| before thresholding as
   a ranking score.
 - PIDC is a faithful port of NetworkInference.jl (Chan et al. 2017; the reference
@@ -254,7 +258,7 @@ def notears_tiered(data, names, seed, n_background):
     d = X.shape[1]
     forbid = np.zeros((d, d), dtype=bool)
     forbid[n_background:, :n_background] = True      # no foreground -> background edge
-    W, W_raw = notears_linear(X, forbid=forbid)
+    W, W_raw = notears_linear(X, forbid=forbid, w_threshold=0.1)
     return {"adj": (W != 0).astype(float), "score": np.abs(W_raw)}
 
 
