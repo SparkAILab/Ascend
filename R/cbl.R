@@ -3,7 +3,7 @@
 ## CBL (Watson & Silva) reference implementation used as the comparator.
 ##
 ## Reviewer comments: 6 (CBL is the comparator for the per-test cost analysis)
-## Revision notes: Unchanged algorithm. Only the shah_ss.R path (now found from the repo root) and the core count (env N_CORES, default 16) changed, and ss_fn returns decision 0 when a rate is never positive (the Shah-Samworth bound is undefined at theta = 0 and crashed on sparse count data); this cannot change any decision the original code reached. cbl_as_ancestral() converts the output to [ancestor, descendant].
+## Revision notes: Unchanged algorithm. Only the shah_ss.R path (now found from the repo root) and the core count (env N_CORES, default 16) changed, and ss_fn returns decision 0 when a rate is never positive (the Shah-Samworth bound is undefined at theta = 0 and crashed on sparse count data), and l0 selects nothing for a target that is constant on its training split or uncorrelated with every feature (glmnet failed there); this cannot change any decision the original code reached. cbl_as_ancestral() converts the output to [ancestor, descendant].
 ## How to run: Sourced by benchmarks/cbl/run_ascend_vs_cbl.R and benchmarks/causal_grid/hpc_run.R. Needs pcalg, lightgbm, glmnet, doMC.
 ## Full write-up: docs/REVISION_REPORT.md
 ## ======================================================================
@@ -68,8 +68,14 @@ l0 <- function(x, y, f, prms) {
   n <- nrow(x)
   trn <- sample(n, round(0.8 * n))
   tst <- seq_len(n)[-trn]
+  # A target that is constant on the training split (e.g. an all-zero gene
+  # in sparse count data) has nothing to select
+  if (var(y[trn]) == 0) return(rep(0, ncol(x)))
   if (f == 'lasso') {
     fit <- glmnet(x[trn, ], y[trn], intercept = FALSE)
+    # x'y = 0 for every feature (sparse counts: the target's non-zero cells
+    # all have zero predictors) gives a NaN lambda path: nothing is selected
+    if (any(!is.finite(fit$lambda))) return(rep(0, ncol(x)))
     y_hat <- predict(fit, newx = x[tst, ], s = fit$lambda)
     eps <- y_hat - y[tst]
     mse <- colMeans(eps^2)
