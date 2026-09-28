@@ -137,7 +137,10 @@ score_one <- function(out, Tr, target, K_asc) {
   # direction
   off <- which(row(Tr) != col(Tr))
   if (out$class == "causal") {
-    Sdir <- (!is.na(est) & est == 1) * 2 + (is.na(est)) * 1     # claim > unknown > no
+    # claim > unknown > no; within each level the method's own (symmetric)
+    # pair score breaks ties, so direction comes from the graph only
+    Sdir <- (!is.na(est) & est == 1) * 2 + (is.na(est)) * 1
+    Sdir <- Sdir + Ssym / (max(Ssym) + 1)
   } else if (out$class == "directed") {
     Sdir <- abs(out$score[xl, xl]); Sdir[!is.finite(Sdir)] <- 0
   } else Sdir <- NULL
