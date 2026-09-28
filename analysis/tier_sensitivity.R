@@ -1,4 +1,14 @@
 ## ======================================================================
+## analysis/tier_sensitivity.R
+## Sensitivity of ASCEND to violations of the two-tier assumption.
+##
+## Reviewer comments: 4
+## Revision notes: Sweeps four violation types (see R/sim_tiers.R) and reports the shared metrics.
+## How to run: Rscript analysis/tier_sensitivity.R  (SEEDS=3 for a quick look) -> analysis/out/tier_sensitivity*
+## Full write-up: docs/REVISION_REPORT.md
+## ======================================================================
+
+## ======================================================================
 ## Reviewer comment 4: sensitivity to violations of the two-tier assumption
 ## ----------------------------------------------------------------------
 ## One violation type at a time, at increasing rates, everything else at
@@ -13,7 +23,18 @@
 ## ======================================================================
 
 suppressPackageStartupMessages({ library(R.utils); library(ggplot2) })
-source("ascend.R"); source("eval_metrics.R"); source("sim_tiers.R"); source("stats_utils.R")
+## Locate the repository root (the folder holding R/ascend.R), so the
+## script runs from the repo root or from any sub-folder.
+ROOT <- local({
+  d <- normalizePath(getwd())
+  while (!file.exists(file.path(d, "R", "ascend.R"))) {
+    if (dirname(d) == d) stop("Run this script from inside the Ascend repository")
+    d <- dirname(d)
+  }
+  d
+})
+for (f in c("ascend.R", "eval_metrics.R", "sim_tiers.R", "stats_utils.R")) source(file.path(ROOT, "R", f))
+OUT <- file.path(ROOT, "analysis", "out")
 
 env_num <- function(k, d) as.numeric(Sys.getenv(k, d))
 SEEDS   <- 100L + seq_len(env_num("SEEDS", "10"))
@@ -54,13 +75,13 @@ for (type in names(LEVELS)) for (lv in LEVELS[[type]]) for (s in SEEDS) {
   cat(sprintf("%-9s level=%.2f seed=%d done\n", type, lv, s))
 }
 res <- do.call(dplyr::bind_rows, rows)
-dir.create("analysis/out", recursive = TRUE, showWarnings = FALSE)
-write.csv(res, "analysis/out/tier_sensitivity.csv", row.names = FALSE)
+dir.create(OUT, recursive = TRUE, showWarnings = FALSE)
+write.csv(res, file.path(OUT, "tier_sensitivity.csv"), row.names = FALSE)
 
 mets <- c("dir_precision", "dir_recall", "dir_f1", "orient_acc", "coverage", "shd")
 ok   <- res[res$status == "ok", ]; ok$method <- "ASCEND"
 summ <- summary_table(ok, mets, c("type", "level"))
-write.csv(summ, "analysis/out/tier_sensitivity_summary.csv", row.names = FALSE)
+write.csv(summ, file.path(OUT, "tier_sensitivity_summary.csv"), row.names = FALSE)
 
 long <- do.call(rbind, lapply(setdiff(mets, "shd"), function(m)
   data.frame(type = summ$type, level = summ$level, metric = m,
@@ -74,7 +95,7 @@ p <- ggplot(long, aes(level, mean, colour = metric)) +
                                       hide_z = "Unmeasured background",
                                       z_as_x = "Background labelled as foreground"))) +
   labs(x = "Violation rate", y = "Mean (+/- SE)", colour = NULL) + theme_bw()
-ggsave("analysis/out/tier_sensitivity.pdf", p, width = 9, height = 6)
+ggsave(file.path(OUT, "tier_sensitivity.pdf"), p, width = 9, height = 6)
 
 options(width = 200)
 print(summ[, c("type", "level", paste0(mets, "_mean"))], digits = 3, row.names = FALSE)

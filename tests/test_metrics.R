@@ -1,4 +1,18 @@
-source("eval_metrics.R")  # run from repo root: Rscript tests/test_metrics.R
+## ======================================================================
+## tests/test_metrics.R
+## Unit tests for R/eval_metrics.R and R/stats_utils.R on hand-built graphs
+## whose correct scores are known (reviewer comments 2, 9, 11, minor 9).
+## Run: Rscript tests/test_metrics.R      (base R only, < 5 s)
+## ======================================================================
+ROOT <- local({                      # repo root = folder holding R/ascend.R
+  d <- normalizePath(getwd())
+  while (!file.exists(file.path(d, "R", "ascend.R"))) {
+    if (dirname(d) == d) stop("Run the tests from inside the Ascend repository")
+    d <- dirname(d)
+  }
+  d
+})
+source(file.path(ROOT, "R", "eval_metrics.R"))
 n <- c("x1","x2","x3")
 T <- matrix(0,3,3,dimnames=list(n,n)); T["x1","x2"] <- 1; T["x2","x3"] <- 1; T["x1","x3"] <- 1  # chain x1->x2->x3
 # perfect estimate
@@ -18,7 +32,7 @@ E3 <- T; E3["x1","x2"] <- 0.5
 stopifnot(eval_ancestral(E3,T)$dir_tp==3, eval_ancestral(E3,T,pos_values=1)$dir_tp==2)
 cat("eval_metrics tests OK\n")
 
-source("stats_utils.R")
+source(file.path(ROOT, "R", "stats_utils.R"))
 set.seed(2); x <- rnorm(30, .1); y <- x - 0.05 + rnorm(30, 0, .02)
 pc <- paired_compare(x, y); stopifnot(pc$ci_lo < pc$mean_diff, pc$mean_diff < pc$ci_hi, pc$n_pairs==30)
 dt <- data.frame(method=rep(c("ASCEND","G","W"),each=20), cell=rep(1:2,30), rep=rep(1:20,3), f1=runif(60), aupr=runif(60))

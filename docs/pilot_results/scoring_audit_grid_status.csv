@@ -1,0 +1,6 @@
+method,error,ok,skipped_timeout,timeout,error_share
+ASCEND,0,11250,0,0,0
+CBL,30,4670,6336,214,0.006
+GES,764,10486,0,0,0.068
+LiNGAM,1696,6262,3265,27,0.213
+PC,7277,1763,2135,75,0.805

@@ -1,4 +1,14 @@
 ## ======================================================================
+## analysis/orientation_analysis.R
+## Which rules drive ASCEND orientation, and when it fails.
+##
+## Reviewer comments: 11
+## Revision notes: Per-pair provenance joined with graph features; tables by rule, outcome and feature.
+## How to run: Rscript analysis/orientation_analysis.R  (SEEDS=5 for a quick look) -> analysis/out/orientation_*
+## Full write-up: docs/REVISION_REPORT.md
+## ======================================================================
+
+## ======================================================================
 ## Reviewer comment 11: what drives ASCEND's orientation accuracy?
 ## ----------------------------------------------------------------------
 ## For every foreground pair of every simulated run, record the truth, the
@@ -22,7 +32,18 @@
 ## ======================================================================
 
 suppressPackageStartupMessages(library(R.utils))
-source("ascend.R"); source("eval_metrics.R"); source("sim_tiers.R")
+## Locate the repository root (the folder holding R/ascend.R), so the
+## script runs from the repo root or from any sub-folder.
+ROOT <- local({
+  d <- normalizePath(getwd())
+  while (!file.exists(file.path(d, "R", "ascend.R"))) {
+    if (dirname(d) == d) stop("Run this script from inside the Ascend repository")
+    d <- dirname(d)
+  }
+  d
+})
+for (f in c("ascend.R", "eval_metrics.R", "sim_tiers.R")) source(file.path(ROOT, "R", f))
+OUT <- file.path(ROOT, "analysis", "out")
 
 SEEDS <- 100L + seq_len(as.integer(Sys.getenv("SEEDS", "20")))
 GRID  <- expand.grid(n = c(1024, 4096), sp = c(0.5, 0.7, 0.9))
@@ -100,8 +121,8 @@ P$rule[is.na(P$rule)] <- "unresolved"
 P$related   <- P$truth != "none"
 P$oriented  <- P$est %in% c("a<b", "b<a")
 P$correct   <- P$est == P$truth
-dir.create("analysis/out", recursive = TRUE, showWarnings = FALSE)
-write.csv(P, "analysis/out/orientation_pairs.csv", row.names = FALSE)
+dir.create(OUT, recursive = TRUE, showWarnings = FALSE)
+write.csv(P, file.path(OUT, "orientation_pairs.csv"), row.names = FALSE)
 
 rate <- function(x) if (length(x)) mean(x) else NA_real_
 
@@ -112,7 +133,7 @@ T1 <- do.call(rbind, lapply(split(P, P$rule), function(d) data.frame(
   oriented = sum(d$oriented),
   orient_correct_when_related = rate(d$correct[d$oriented & d$related]),
   median_votes = median(d$votes, na.rm = TRUE))))
-write.csv(T1, "analysis/out/orientation_by_rule.csv", row.names = FALSE)
+write.csv(T1, file.path(OUT, "orientation_by_rule.csv"), row.names = FALSE)
 
 ## 2. truly related pairs: oriented correctly / reversed / called unrelated / undetermined
 rel <- P[P$related, ]
@@ -121,7 +142,7 @@ rel$outcome <- ifelse(rel$est == rel$truth, "correct",
                ifelse(rel$est == "none", "missed (called unrelated)",
                ifelse(rel$est == "undirected", "undetermined (undirected)", "undetermined (NA)"))))
 T2 <- as.data.frame(prop.table(table(sp = rel$sp, n = rel$n, outcome = rel$outcome), c(1, 2)))
-write.csv(T2, "analysis/out/orientation_outcomes.csv", row.names = FALSE)
+write.csv(T2, file.path(OUT, "orientation_outcomes.csv"), row.names = FALSE)
 
 ## 3. orientation accuracy among related & oriented pairs, by structural feature
 ro <- rel[rel$oriented, ]
@@ -140,7 +161,7 @@ T3 <- rbind(
   by_feat(cut(ro$pcor, c(0, 0.05, 0.1, 0.2, 1), c("<0.05", "0.05-0.1", "0.1-0.2", ">0.2"), include.lowest = TRUE),
           "|partial cor| given Z parents"),
   by_feat(ifelse(is.na(ro$rule), "?", ro$rule), "committing rule"))
-write.csv(T3, "analysis/out/orientation_by_feature.csv", row.names = FALSE)
+write.csv(T3, file.path(OUT, "orientation_by_feature.csv"), row.names = FALSE)
 
 options(width = 200)
 cat("\n== 1. Rules ==\n");                 print(T1, digits = 3, row.names = FALSE)
