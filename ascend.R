@@ -29,7 +29,16 @@ sim_dat <- function(n, d_z, d_x,
                     sp       = 0.9,   # sparsity (larger => sparser graph)
                     p_cross  = 0.05,  # P(Z -> X edge)
                     x_effect = 0.8,   # X -> X effect size
+                    z_scale  = FALSE, # standardise each Z to unit variance as it is drawn
                     seed     = NULL) {
+  # z_scale = FALSE reproduces the simulator used for the submitted results.
+  # There, Z -> Z coefficients are unscaled, so Z variances grow roughly
+  # geometrically along the background DAG; once d_z is a few tens, the Z
+  # contribution swamps the X -> X signal and true foreground edges become
+  # nearly undetectable (median |partial cor| of true X -> X edges falls from
+  # ~0.3 at d_z = 10 to ~0.02 at d_z = 50 for n = 1024, sp = 0.3).
+  # z_scale = TRUE keeps every Z at unit variance, so the X -> X signal no
+  # longer depends on d_z.
   
   if (!is.null(seed)) set.seed(seed)
   
@@ -73,6 +82,7 @@ sim_dat <- function(n, d_z, d_x,
     par <- which(Azz[, idx] == 1)
     Z[, idx] <- if (!length(par)) rnorm(n)
     else as.numeric(prep(Z[, par, drop = FALSE], lin_pr) %*% rnorm(length(par))) + rnorm(n)
+    if (z_scale) Z[, idx] <- (Z[, idx] - mean(Z[, idx])) / sd(Z[, idx])
   }
   
   # sample foreground X in topological order; record the true X -> X edges
@@ -101,7 +111,8 @@ sim_dat <- function(n, d_z, d_x,
   colnames(dat) <- c(paste0("z", seq_len(d_z)), paste0("x", seq_len(d_x)))
   rownames(adj_xx) <- colnames(adj_xx) <- paste0("x", seq_len(d_x))
   list(dat = dat, adj_xx = adj_xx,
-       params = list(n = n, d_z = d_z, d_x = d_x, r2 = r2, sp = sp))
+       params = list(n = n, d_z = d_z, d_x = d_x, r2 = r2, sp = sp, lin_pr = lin_pr,
+                     p_cross = p_cross, x_effect = x_effect, z_scale = z_scale))
 }
 
 
@@ -161,13 +172,13 @@ ci_pval <- function(x, y, S, C, n) {
 #    Returns the nearest ancestors pa(target; pool).
 # ----------------------------------------------------------------------
 
-iamb <- function(target, pool, C, n, alpha, max_cond) {
+iamb <- function(target, pool, C, n, alpha, max_cond, ci = ci_pval) {
   pool <- setdiff(pool, target)
   mb <- character(0)
   repeat {                                        # grow: add the strongest associate
     rest <- setdiff(pool, mb)
     if (!length(rest) || length(mb) >= max_cond) break
-    pv <- vapply(rest, function(w) ci_pval(target, w, mb, C, n), numeric(1))
+    pv <- vapply(rest, function(w) ci(target, w, mb, C, n), numeric(1))
     pv[is.na(pv)] <- 1
     k <- which.min(pv)
     if (pv[k] <= alpha) mb <- c(mb, rest[k]) else break
@@ -176,7 +187,7 @@ iamb <- function(target, pool, C, n, alpha, max_cond) {
   while (changed && length(mb)) {
     changed <- FALSE
     for (w in mb) {
-      p <- ci_pval(target, w, setdiff(mb, w), C, n)
+      p <- ci(target, w, setdiff(mb, w), C, n)
       if (!is.na(p) && p > alpha) { mb <- setdiff(mb, w); changed <- TRUE; break }
     }
   }
@@ -197,6 +208,25 @@ iamb <- function(target, pool, C, n, alpha, max_cond) {
 #              (1 = first valid witness; raise to >=2 to trade recall for precision)
 #   prescreen  keep Z marginally associated to X (BH p < prescreen) as the
 #              IAMB candidate pool; bounds cost when d_z is large
+#   cond_set   "guarded" (default): condition on the guarded union of nearest
+#              ancestors, eq. (2) of the paper.
+#              "full": ablation that conditions on the full valid set used by
+#              CBL, S_full = Z U {known non-descendants of both endpoints},
+#              with the same Fisher-z test; no Markov-blanket step is run.
+#              Isolates the conditioning-set design from the per-test cost.
+#
+# Value: the ancestrality matrix M, with attribute "stats" holding the
+#   computational-work accounting of the run:
+#     n_ci_tests      total CI tests (pairwise, witness and IAMB tests)
+#     n_pair_tests    of which R3 pairwise tests
+#     n_witness_tests of which R1/R2 witness tests
+#     n_mb_tests      of which Markov-blanket (IAMB + prescreen) tests
+#     ci_time_sec     wall-clock time spent inside the CI test
+#     mean_cond_size, max_cond_size   |S| over all tests
+#     mean_pair_cond, max_pair_cond   |S_ij| over the R3 pairwise tests
+#     n_sweeps        outer iterations until convergence
+#   and attribute "pair_p": the p-value of the last R3 (pairwise) test of
+#   each pair, a continuous score for AUPR/AUROC
 # ----------------------------------------------------------------------
 
 ascend <- function(sim_obj,
@@ -206,8 +236,10 @@ ascend <- function(sim_obj,
                    fdr       = TRUE,
                    min_votes = 1,
                    prescreen = 0.30,
+                   cond_set  = c("guarded", "full"),
                    verbose   = TRUE) {
   
+  cond_set <- match.arg(cond_set)
   dat   <- as.data.frame(sim_obj$dat)
   xlabs <- grep("^x", colnames(dat), value = TRUE)
   zlabs <- grep("^z", colnames(dat), value = TRUE)
@@ -221,27 +253,47 @@ ascend <- function(sim_obj,
   C <- suppressWarnings(cor(Xall, use = "pairwise.complete.obs"))
   C[is.na(C)] <- 0; diag(C) <- 1
   
+  # instrumented CI test: every test in this run goes through ci()
+  work <- new.env(parent = emptyenv())
+  work$n <- c(pair = 0, witness = 0, mb = 0); work$time <- 0
+  work$sz <- c(sum = 0, max = 0); work$psz <- c(sum = 0, max = 0)
+  ci <- function(x, y, S, C, n, kind = "mb") {
+    t0 <- Sys.time()
+    p  <- ci_pval(x, y, S, C, n)
+    work$time <- work$time + as.numeric(Sys.time() - t0, units = "secs")
+    work$n[kind] <- work$n[kind] + 1
+    k <- length(setdiff(S, c(x, y)))
+    work$sz <- c(sum = work$sz[["sum"]] + k, max = max(work$sz[["max"]], k))
+    if (kind == "pair") work$psz <- c(sum = work$psz[["sum"]] + k, max = max(work$psz[["max"]], k))
+    p
+  }
+  
   # per-X background pool: Z marginally associated to X
   prescreen_z <- function(xi) {
-    pv <- vapply(zlabs, function(zc) ci_pval(xi, zc, character(0), C, n), numeric(1))
+    pv <- vapply(zlabs, function(zc) ci(xi, zc, character(0), C, n), numeric(1))
     pv[is.na(pv)] <- 1
     keep <- which(p.adjust(pv, "BH") < prescreen)
     if (length(keep) < min(3, length(zlabs))) keep <- order(pv)[seq_len(min(3, length(pv)))]
     zlabs[keep]
   }
-  z_pool <- setNames(lapply(xlabs, prescreen_z), xlabs)
+  z_pool <- if (cond_set == "guarded") setNames(lapply(xlabs, prescreen_z), xlabs)
+  else setNames(rep(list(zlabs), d_x), xlabs)
   
-  nearest_anc <- function(xi, pool) iamb(xi, intersect(pool, colnames(dat)), C, n, alpha_mb, max_cond)
+  nearest_anc <- function(xi, pool) iamb(xi, intersect(pool, colnames(dat)), C, n, alpha_mb, max_cond, ci = ci)
   
-  pa <- setNames(lapply(xlabs, function(xi) nearest_anc(xi, z_pool[[xi]])), xlabs)  # t = 1: over Z
+  # t = 1: nearest ancestors over Z (the "full" ablation skips blanket discovery)
+  pa <- if (cond_set == "guarded") setNames(lapply(xlabs, function(xi) nearest_anc(xi, z_pool[[xi]])), xlabs)
+  else setNames(rep(list(character(0)), d_x), xlabs)
   
   M  <- matrix(NA_real_, d_x, d_x, dimnames = list(xlabs, xlabs))
+  Pp <- matrix(NA_real_, d_x, d_x, dimnames = list(xlabs, xlabs))  # latest R3 p-value per pair
   
   # Guarded conditioning set: union of nearest ancestors, keeping a foreground
   # W only if it is a known non-descendant of BOTH endpoints. Background Z always
   # qualifies. This excludes mediators of either endpoint, which is what keeps R3 sound.
   build_S <- function(i, j) {
-    cand <- setdiff(union(pa[[xlabs[i]]], pa[[xlabs[j]]]), xlabs[c(i, j)])
+    cand <- if (cond_set == "guarded") setdiff(union(pa[[xlabs[i]]], pa[[xlabs[j]]]), xlabs[c(i, j)])
+    else c(zlabs, xlabs[-c(i, j)])                     # CBL's S_full, filtered below
     keep <- vapply(cand, function(w) {
       if (is_z[w]) return(TRUE)
       wi <- match(w, xlabs)
@@ -262,8 +314,9 @@ ascend <- function(sim_obj,
     for (i in 2:d_x) for (j in 1:(i - 1)) {
       if (!is.na(M[i, j])) next
       S  <- build_S(i, j)
-      pv <- ci_pval(xlabs[i], xlabs[j], S, C, n)
+      pv <- ci(xlabs[i], xlabs[j], S, C, n, kind = "pair")
       if (is.na(pv)) { converged <- FALSE; next }
+      Pp[i, j] <- Pp[j, i] <- pv
       info[[length(info) + 1]] <- list(i = i, j = j, S = S, pv = pv)
     }
     if (length(info)) {
@@ -282,8 +335,8 @@ ascend <- function(sim_obj,
         evid  <- c(r1 = 0,  r1r = 0,  r2 = 0,  r2r = 0)
         for (W in S) {
           Sw  <- setdiff(S, W)
-          pj0 <- ci_pval(W, xj, Sw, C, n);  pjI <- ci_pval(W, xj, c(Sw, xi), C, n)
-          pi0 <- ci_pval(W, xi, Sw, C, n);  piJ <- ci_pval(W, xi, c(Sw, xj), C, n)
+          pj0 <- ci(W, xj, Sw, C, n, "witness");  pjI <- ci(W, xj, c(Sw, xi), C, n, "witness")
+          pi0 <- ci(W, xi, Sw, C, n, "witness");  piJ <- ci(W, xi, c(Sw, xj), C, n, "witness")
           if (!is.na(pj0) && !is.na(pjI) && pj0 <= alpha && pjI > alpha) {        # R1  => Xi < Xj
             votes["r1"]  <- votes["r1"]  + 1L; evid["r1"]  <- evid["r1"]  - log(pj0 + 1e-300) }
           if (!is.na(pi0) && !is.na(piJ) && pi0 <= alpha && piJ > alpha) {        # R1r => Xj < Xi
@@ -337,7 +390,7 @@ ascend <- function(sim_obj,
     }
     
     # --- refresh nearest ancestors over the updated non-descendant sets ---
-    for (i in 1:d_x) {
+    if (cond_set == "guarded") for (i in 1:d_x) {
       xi <- xlabs[i]; old <- pa[[xi]]
       pool <- setdiff(unique(c(z_pool[[xi]], xlabs[which(M[, i] %in% c(0.5, 1))])), xi)
       pa[[xi]] <- nearest_anc(xi, pool)
@@ -347,7 +400,8 @@ ascend <- function(sim_obj,
   
   # final R3 sweep on still-unresolved pairs (independent => ~; else leave NA)
   for (i in 2:d_x) for (j in 1:(i - 1)) if (is.na(M[i, j])) {
-    pv <- ci_pval(xlabs[i], xlabs[j], build_S(i, j), C, n)
+    pv <- ci(xlabs[i], xlabs[j], build_S(i, j), C, n, kind = "pair")
+    if (!is.na(pv)) Pp[i, j] <- Pp[j, i] <- pv
     if (!is.na(pv) && pv > alpha) { M[i, j] <- 0; M[j, i] <- 0 }
   }
   for (i in 1:d_x) for (j in 1:d_x) if (i != j &&
@@ -364,6 +418,21 @@ ascend <- function(sim_obj,
   if (!is.null(ord)) M <- M[ord, ord, drop = FALSE]
   diag(M) <- NA
   if (verbose) message(sprintf("  [ascend] converged after %d iteration(s)", iter))
+  # continuous edge score for ranking metrics (AUPR/AUROC): the p-value of the
+  # last R3 test of each pair, in the same (topological) order as M
+  attr(M, "pair_p") <- Pp[rownames(M), colnames(M), drop = FALSE]
+  attr(M, "stats") <- list(
+    cond_set        = cond_set,
+    n_ci_tests      = sum(work$n),
+    n_pair_tests    = unname(work$n["pair"]),
+    n_witness_tests = unname(work$n["witness"]),
+    n_mb_tests      = unname(work$n["mb"]),
+    ci_time_sec     = work$time,
+    mean_cond_size  = if (sum(work$n)) work$sz[["sum"]] / sum(work$n) else 0,
+    max_cond_size   = work$sz[["max"]],
+    mean_pair_cond  = if (work$n[["pair"]]) work$psz[["sum"]] / work$n[["pair"]] else 0,
+    max_pair_cond   = work$psz[["max"]],
+    n_sweeps        = iter)
   M
 }
 

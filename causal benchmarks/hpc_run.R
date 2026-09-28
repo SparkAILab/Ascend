@@ -68,6 +68,11 @@ N_VEC          <- 2L^(9:17)      # 512 … 131072.  EDIT THIS LINE to cap (e.g. 
 # the array size derives from it automatically.
 P_CROSS        <- 0.20
 X_EFFECT       <- 0.90
+# Unit-variance background (see sim_dat()); Z_SCALE=0 reproduces the submitted runs.
+Z_SCALE        <- Sys.getenv("Z_SCALE", "1") == "1"
+# Keep each method's estimated matrix in the replicate .rds so results can be
+# re-scored later without re-running.
+SAVE_MATRICES  <- Sys.getenv("SAVE_MATRICES", "1") == "1"
 
 # ── 2. Parameter grid (81 combinations) ──────────────────────────────────────
 
@@ -127,6 +132,7 @@ source(ascend_src[1])              # sim_dat, ascend, true_ancestral, evaluate, 
 cat(sprintf("[Setup] Sourced ASCEND from: %s\n", ascend_src[1]))
 
 source("cbl.R")              # cbl_fn is found at ../cbl.R
+source(Filter(file.exists, c("eval_metrics.R", "../eval_metrics.R"))[1])   # eval_ancestral()
 
 for (fn in c("sim_dat", "ascend", "cbl_fn", "minD")) {
   if (!exists(fn)) stop(sprintf("Required function not found: %s", fn))
@@ -152,6 +158,9 @@ true_ancestral <- function(sim_obj) {
   rownames(R) <- colnames(R) <- nms; R
 }
 
+# Undirected CPDAG edges between otherwise-unrelated nodes are coded as 1 in
+# both directions: eval_ancestral() then scores them as "related, direction
+# not committed" (orient_undet) instead of as unresolved.
 cpdag_to_ancestral <- function(cpdag, nms) {
   d <- nrow(cpdag)
   cpdag[is.na(cpdag)] <- 0            # NA-safe: PC's amat can carry NA/conflict marks,
@@ -163,7 +172,7 @@ cpdag_to_ancestral <- function(cpdag, nms) {
   R[is.na(R)] <- 0
   for (i in seq_len(d)) for (j in seq_len(d))
     if (i!=j && cpdag[i,j]==1 && cpdag[j,i]==1 && R[i,j]==0 && R[j,i]==0)
-      R[i,j] <- NA
+      R[i,j] <- 1
   diag(R) <- NA; R
 }
 
@@ -186,6 +195,10 @@ make_suffstat <- function(mat) {
 }
 
 # ── 7. Evaluation ─────────────────────────────────────────────────────────────
+# Superseded by eval_ancestral() (eval_metrics.R), which scores every ordered
+# pair, so reversed orientations count as errors. This older version only
+# reads the upper triangle in label order; kept for reproducing the
+# submitted numbers.
 
 ancestral_metrics <- function(M_est, M_true) {
   nms <- rownames(M_true); M_est <- M_est[nms,nms]; d <- nrow(M_true)
@@ -241,7 +254,8 @@ run_ascend <- function(sim_obj, d_x, d_z, n_val) {
       M <- ascend(sim_obj, maxiter=12L, alpha=0.05,
                   alpha_mb=0.05, fdr=TRUE, min_votes=1L,
                   prescreen=0.30, verbose=FALSE)
-    )); M
+    ))
+    ASCEND_STATS <<- attr(M, "stats"); M
   }, d_x, d_z, n_val)
 }
 
@@ -316,32 +330,31 @@ make_row <- function(method, M, M_true, x_cols, n_val, rep_id,
   make_stub <- function(st) data.frame(
     job=COMBO, task_id=TASK_ID, method=method, n=n_val, rep=rep_id,
     d_x=d_x, d_z=d_z, r2=r2, sp=sp, n_over_dz=n_over_dz,
-    precision=NA_real_, recall=NA_real_, f1=NA_real_,
-    accuracy=NA_real_, coverage=NA_real_,
-    tp=NA_integer_, fp=NA_integer_, fn=NA_integer_, tn=NA_integer_,
-    unres_tp=NA_integer_, unres_tn=NA_integer_,
+    precision=NA_real_, recall=NA_real_, f1=NA_real_, coverage=NA_real_,
     elapsed_sec=elapsed_sec, status=st, stringsAsFactors=FALSE
   )
   if (is.null(M)) return(make_stub(status))             # status carries timeout/error/skip
   M <- tryCatch(M[x_cols, x_cols], error=function(e) NULL)
   if (is.null(M)) return(make_stub("failed_subset"))
-  mt  <- ancestral_metrics(M, M_true)
-  pr  <- if (is.na(mt$precision)) 0 else mt$precision
-  re  <- if (is.na(mt$recall))    0 else mt$recall
-  f1  <- if (is.na(mt$f1))        0 else mt$f1
-  cov <- if (is.na(mt$coverage))  0 else mt$coverage
-  cat(sprintf("done (%.1fs)  pr=%.3f  re=%.3f  f1=%.3f  cov=%.3f\n",
-              elapsed_sec, pr, re, f1, cov))
+  mt  <- eval_ancestral(M, M_true)
+  cat(sprintf("done (%.1fs)  dirP=%.3f  dirR=%.3f  dirF1=%.3f  orient=%.3f  cov=%.3f\n",
+              elapsed_sec, mt$dir_precision, mt$dir_recall, mt$dir_f1,
+              mt$orient_acc, mt$coverage))
   flush.console()
-  data.frame(
+  st <- if (method == "ASCEND" && exists("ASCEND_STATS")) ASCEND_STATS else NULL
+  row <- data.frame(
     job=COMBO, task_id=TASK_ID, method=method, n=n_val, rep=rep_id,
-    d_x=d_x, d_z=d_z, r2=r2, sp=sp, n_over_dz=n_over_dz,
-    precision=mt$precision, recall=mt$recall, f1=mt$f1,
-    accuracy=mt$accuracy, coverage=mt$coverage,
-    tp=mt$tp, fp=mt$fp, fn=mt$fn, tn=mt$tn,
-    unres_tp=mt$unres_tp, unres_tn=mt$unres_tn,
+    d_x=d_x, d_z=d_z, r2=r2, sp=sp, n_over_dz=n_over_dz, z_scale=Z_SCALE,
+    # precision/recall/f1 are the directed (orientation-aware) metrics
+    precision=mt$dir_precision, recall=mt$dir_recall, f1=mt$dir_f1,
+    as.data.frame(mt),
+    n_ci_tests   = if (is.null(st)) NA_real_ else st$n_ci_tests,
+    max_pair_cond= if (is.null(st)) NA_real_ else st$max_pair_cond,
+    n_sweeps     = if (is.null(st)) NA_real_ else st$n_sweeps,
     elapsed_sec=elapsed_sec, status="ok", stringsAsFactors=FALSE
   )
+  if (SAVE_MATRICES) attr(row, "M") <- M
+  row
 }
 
 # ── 10. Single replicate ──────────────────────────────────────────────────────
@@ -397,7 +410,10 @@ run_one_rep <- function(sim_obj, n_val, rep_id, dead) {
   )
   rows <- Filter(Negate(is.null), rows)
   if (length(rows)==0L) return(NULL)
-  do.call(rbind, rows)
+  mats <- setNames(lapply(rows, function(r) attr(r, "M")), vapply(rows, function(r) r$method[1], ""))
+  out  <- dplyr::bind_rows(rows)
+  if (SAVE_MATRICES) attr(out, "matrices") <- c(list(TRUTH = M_true), Filter(Negate(is.null), mats))
+  out
 }
 
 # ── 11. Main loop (single n; loop over replicates) ────────────────────────────
@@ -423,7 +439,7 @@ for (rep in seq_len(N_REP)) {
   sim <- tryCatch(
     sim_dat(n=N_VAL, d_z=params$d_z, d_x=params$d_x,
             r2=params$r2, lin_pr=1,  sp=params$sp,
-            p_cross=P_CROSS, x_effect=X_EFFECT,
+            p_cross=P_CROSS, x_effect=X_EFFECT, z_scale=Z_SCALE,
             seed=COMBO*1000000L + N_VAL*1000L + rep),
     error=function(e) { message("sim_dat: ", e$message); NULL }
   )

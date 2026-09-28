@@ -9,6 +9,11 @@
 ##   d_x in {5, 10, 15, 20}
 ##   d_z in {10, 20, 30, 40, 50}
 ##
+## Methods: ascend (guarded nearest-ancestor sets), ascend_full (ablation:
+## same algorithm and same Fisher-z test, but conditioning on CBL's full
+## valid set Z U known non-descendants), and cbl. ascend_full separates the
+## effect of the conditioning-set design from the per-test cost.
+##
 ## Each (method, configuration) cell is run over 5 seeds with a per-cell
 ## timeout (default 1 hour). Results are appended to the output CSV after
 ## every cell, so an interrupted run can be resumed without recomputation.
@@ -31,7 +36,9 @@ suppressPackageStartupMessages({
 
 ASCEND_PATH <- "../ascend.R"
 CBL_PATH    <- "../cbl.R"
-RESULTS_CSV <- "results_ascend_vs_cbl.csv"
+EVAL_PATH   <- "../eval_metrics.R"
+RESULTS_CSV <- Sys.getenv("BENCH_OUT", "results_ascend_vs_cbl_v2.csv")
+METHODS     <- strsplit(Sys.getenv("BENCH_METHODS", "ascend,ascend_full,cbl"), ",")[[1]]
 
 ## ----------------------------------------------------------------------
 ## Sourcing
@@ -46,6 +53,7 @@ source(ASCEND_PATH, local = FALSE, chdir = TRUE)
 
 cat("[setup] sourcing CBL...\n"); flush.console()
 source(CBL_PATH, local = FALSE, chdir = TRUE)
+source(EVAL_PATH, local = FALSE, chdir = TRUE)
 
 ## ----------------------------------------------------------------------
 ## Independence-test accounting
@@ -69,6 +77,7 @@ reset_counters <- function() {
   .work_counter$ascend_ci_calls <- 0
   .work_counter$cbl_l0_calls    <- 0
   .work_counter$cbl_ci_tests    <- 0
+  .work_counter$cbl_l0_time     <- 0
 }
 reset_counters()
 
@@ -89,87 +98,35 @@ local({
            p <- if (is.null(dim(x))) 1L else ncol(x)
            .work_counter$cbl_l0_calls <- .work_counter$cbl_l0_calls + 1
            .work_counter$cbl_ci_tests <- .work_counter$cbl_ci_tests + p
-           orig_l0(x, y, f, prms)
+           t0  <- Sys.time()
+           out <- orig_l0(x, y, f, prms)
+           .work_counter$cbl_l0_time <- .work_counter$cbl_l0_time +
+             as.numeric(Sys.time() - t0, units = "secs")
+           out
          },
          envir = globalenv())
 })
 
+is_ascend <- function(method) method %in% c("ascend", "ascend_full")
+
 get_ci_tests <- function(method) {
-  if (method == "ascend") .work_counter$ascend_ci_calls else .work_counter$cbl_ci_tests
+  if (is_ascend(method)) .work_counter$ascend_ci_calls else .work_counter$cbl_ci_tests
 }
 
 get_aux_count <- function(method) {
-  if (method == "ascend") NA_real_ else .work_counter$cbl_l0_calls
-}
-
-## ----------------------------------------------------------------------
-## Structural Hamming distance and unresolved-pair fraction
-## ----------------------------------------------------------------------
-## evaluate() (defined in ascend.R) already yields precision,
-## recall, F1, coverage, and TP/FP/FN/TN. We add two further metrics:
-##
-##   shd_full/shd_resolved: SHD over the upper triangle of the estimated
-##     ancestral matrix vs. the truth. shd_full penalises unresolved (NA)
-##     pairs at true positives; shd_resolved counts only cells where the
-##     method made an explicit positive or negative claim.
-##   unresolved_frac: fraction of truth-defined pairs left unresolved.
-
-compute_shd <- function(estimated, truth) {
-  nms <- rownames(truth)
-  est <- estimated[nms, nms, drop = FALSE]
-  d   <- nrow(truth)
-  
-  full <- 0L; resolved <- 0L; n_res <- 0L
-  
-  for (i in seq_len(d - 1)) {
-    for (j in (i + 1):d) {
-      t_ij <- truth[i, j]
-      if (is.na(t_ij)) next
-      
-      e_ij <- est[i, j]
-      e_ji <- est[j, i]
-      
-      true_pos <- (t_ij == 1)
-      is_na    <- is.na(e_ij) && is.na(e_ji)
-      pred_pos <- (!is.na(e_ij) && e_ij %in% c(0.5, 1)) ||
-        (!is.na(e_ji) && e_ji %in% c(0.5, 1))
-      
-      if (is_na) {
-        if (true_pos) full <- full + 1L
-      } else {
-        n_res <- n_res + 1L
-        if (true_pos != pred_pos) {
-          full     <- full + 1L
-          resolved <- resolved + 1L
-        }
-      }
-    }
-  }
-  
-  list(shd_full = full, shd_resolved = resolved, n_resolved = n_res)
-}
-
-unresolved_frac <- function(estimated, truth) {
-  nms <- rownames(truth)
-  est <- estimated[nms, nms, drop = FALSE]
-  d   <- nrow(truth)
-  
-  total <- 0L; na_count <- 0L
-  
-  for (i in seq_len(d - 1)) {
-    for (j in (i + 1):d) {
-      if (is.na(truth[i, j])) next
-      total <- total + 1L
-      if (is.na(est[i, j])) na_count <- na_count + 1L
-    }
-  }
-  
-  if (total == 0L) NA_real_ else na_count / total
+  if (is_ascend(method)) NA_real_ else .work_counter$cbl_l0_calls
 }
 
 ## ----------------------------------------------------------------------
 ## Empty result row (shared by timeout/error paths)
 ## ----------------------------------------------------------------------
+
+## Metric columns come from eval_metrics.R so they match every other benchmark.
+na_metric_row <- function() {
+  m <- eval_ancestral(matrix(NA_real_, 2, 2, dimnames = list(c("a", "b"), c("a", "b"))),
+                      matrix(0, 2, 2, dimnames = list(c("a", "b"), c("a", "b"))))
+  as.data.table(lapply(m, function(v) NA_real_))
+}
 
 empty_result_row <- function(method, n, d_x, d_z, seed, status,
                              time_sec = NA_real_, mem_mb = NA_real_,
@@ -180,11 +137,12 @@ empty_result_row <- function(method, n, d_x, d_z, seed, status,
     status = status,
     time_sec = time_sec, mem_mb = mem_mb,
     n_ci_tests = n_ci_tests, n_l0_calls = n_l0_calls,
-    precision = NA_real_, recall = NA_real_, f1 = NA_real_,
-    dir_acc = NA_real_, coverage = NA_real_,
-    tp = NA_real_, fp = NA_real_, fn = NA_real_, tn = NA_real_,
-    eval_unresolved = NA_real_, unresolved_frac = NA_real_,
-    shd_full = NA_real_, shd_resolved = NA_real_, n_resolved = NA_real_,
+    ci_time_sec = NA_real_, time_per_test = NA_real_,
+    n_pair_tests = NA_real_, n_witness_tests = NA_real_, n_mb_tests = NA_real_,
+    mean_cond_size = NA_real_, max_cond_size = NA_real_,
+    mean_pair_cond = NA_real_, max_pair_cond = NA_real_, n_sweeps = NA_real_,
+    true_max_indeg = NA_real_, true_n_edges = NA_real_,
+    na_metric_row(),
     error_msg = error_msg
   )
 }
@@ -209,9 +167,13 @@ run_one_cell <- function(method, n, d_x, d_z, seed, timeout_sec) {
     sp       = 0.3,
     p_cross  = 0.15,
     x_effect = 0.9,
+    z_scale  = Sys.getenv("Z_SCALE", "1") == "1",   # unit-variance background
     seed     = seed
   )
-  amat_true <- true_ancestral(sim_obj$adj_xx)
+  amat_true <- truth_from_adj(sim_obj$adj_xx)
+  adj0 <- sim_obj$adj_xx; adj0[is.na(adj0)] <- 0
+  true_max_indeg <- max(rowSums(adj0)); true_n_edges <- sum(adj0)
+  if (is.null(sim_obj$params$lin_pr)) sim_obj$params$lin_pr <- 1
   
   reset_counters()
   gc(reset = TRUE, full = TRUE)
@@ -222,7 +184,10 @@ run_one_cell <- function(method, n, d_x, d_z, seed, timeout_sec) {
     withTimeout({
       switch(method,
              ascend = ascend(sim_obj, alpha = 0.05, alpha_mb = 0.05,
-                             fdr = TRUE, min_votes = 1),
+                             fdr = TRUE, min_votes = 1, verbose = FALSE),
+             ascend_full = ascend(sim_obj, alpha = 0.05, alpha_mb = 0.05,
+                                  fdr = TRUE, min_votes = 1, cond_set = "full",
+                                  verbose = FALSE),
              cbl    = cbl_fn(sim_obj, gamma = 0.5, maxiter = 100, B = 50),
              stop("Unknown method: ", method)
       )
@@ -246,21 +211,25 @@ run_one_cell <- function(method, n, d_x, d_z, seed, timeout_sec) {
     ))
   }
   
-  ev  <- evaluate(est, amat_true, verbose = FALSE)
-  shd <- compute_shd(est, amat_true)
-  uf  <- unresolved_frac(est, amat_true)
+  if (is.null(rownames(est))) dimnames(est) <- dimnames(amat_true)
+  st   <- attr(est, "stats")
+  n_ci <- get_ci_tests(method)
+  ci_t <- if (!is.null(st)) st$ci_time_sec else .work_counter$cbl_l0_time
+  getst <- function(k) if (!is.null(st) && !is.null(st[[k]])) st[[k]] else NA_real_
   
   data.table(
     method = method, n = n, d_x = d_x, d_z = d_z, seed = seed,
     status = "ok",
     time_sec = elapsed, mem_mb = mem_delta,
-    n_ci_tests = get_ci_tests(method), n_l0_calls = get_aux_count(method),
-    precision = ev$precision, recall = ev$recall, f1 = ev$f1,
-    dir_acc = ev$dir_acc, coverage = ev$coverage,
-    tp = ev$tp, fp = ev$fp, fn = ev$fn, tn = ev$tn,
-    eval_unresolved = ev$unresolved, unresolved_frac = uf,
-    shd_full = shd$shd_full, shd_resolved = shd$shd_resolved,
-    n_resolved = shd$n_resolved,
+    n_ci_tests = n_ci, n_l0_calls = get_aux_count(method),
+    ci_time_sec = ci_t, time_per_test = if (n_ci > 0) ci_t / n_ci else NA_real_,
+    n_pair_tests = getst("n_pair_tests"), n_witness_tests = getst("n_witness_tests"),
+    n_mb_tests = getst("n_mb_tests"),
+    mean_cond_size = getst("mean_cond_size"), max_cond_size = getst("max_cond_size"),
+    mean_pair_cond = getst("mean_pair_cond"), max_pair_cond = getst("max_pair_cond"),
+    n_sweeps = getst("n_sweeps"),
+    true_max_indeg = true_max_indeg, true_n_edges = true_n_edges,
+    as.data.table(eval_ancestral(est, amat_true)),
     error_msg = NA_character_
   )
 }
@@ -287,14 +256,14 @@ sweep_dx <- data.table(n = DEFAULT_N, d_x = dx_vals,    d_z = DEFAULT_DZ)
 sweep_dz <- data.table(n = DEFAULT_N, d_x = DEFAULT_DX, d_z = dz_vals)
 configs  <- unique(rbindlist(list(sweep_n, sweep_dx, sweep_dz)))
 
-plan <- CJ(method  = c("ascend", "cbl"),
+plan <- CJ(method  = METHODS,
            cfg_idx = seq_len(nrow(configs)),
            seed    = 100L + seq_len(SEEDS))
 plan <- merge(plan, configs[, .(cfg_idx = .I, n, d_x, d_z)], by = "cfg_idx")
 setorder(plan, n, d_x, d_z, method, seed)
 
-cat(sprintf("[plan] %d cells total (%d configs x 2 methods x %d seeds)\n",
-            nrow(plan), nrow(configs), SEEDS))
+cat(sprintf("[plan] %d cells total (%d configs x %d methods x %d seeds)\n",
+            nrow(plan), nrow(configs), length(METHODS), SEEDS))
 cat(sprintf("[plan] per-cell timeout: %.0f s\n", TIMEOUT_SEC))
 flush.console()
 
@@ -335,13 +304,13 @@ for (k in seq_len(total_cells)) {
   row <- plan[k]
   
   if (is_done(row$method, row$n, row$d_x, row$d_z, row$seed)) {
-    cat(sprintf("[%4d/%4d] skip (cached): %-6s n=%-5d d_x=%-3d d_z=%-3d seed=%d\n",
+    cat(sprintf("[%4d/%4d] skip (cached): %-11s n=%-5d d_x=%-3d d_z=%-3d seed=%d\n",
                 k, total_cells, row$method, row$n, row$d_x, row$d_z, row$seed))
     flush.console()
     next
   }
   
-  cat(sprintf("[%4d/%4d] run : %-6s n=%-5d d_x=%-3d d_z=%-3d seed=%d ... ",
+  cat(sprintf("[%4d/%4d] run : %-11s n=%-5d d_x=%-3d d_z=%-3d seed=%d ... ",
               k, total_cells, row$method, row$n, row$d_x, row$d_z, row$seed))
   flush.console()
   
@@ -357,9 +326,10 @@ for (k in seq_len(total_cells)) {
   header_written <- TRUE
   
   if (res$status == "ok") {
-    cat(sprintf("OK  %7.2fs  F1=%.3f  SHD=%g  CI=%g\n",
-                res$time_sec, res$f1 %||% NA_real_,
-                res$shd_full %||% NA_real_, res$n_ci_tests %||% NA_real_))
+    cat(sprintf("OK  %7.2fs  dirF1=%.3f  SHD=%g  CI=%g  t/test=%.2gs\n",
+                res$time_sec, res$dir_f1 %||% NA_real_,
+                res$shd %||% NA_real_, res$n_ci_tests %||% NA_real_,
+                res$time_per_test %||% NA_real_))
   } else {
     cat(sprintf("%s after %.1fs  (%s)\n",
                 toupper(res$status), res$time_sec %||% NA_real_,

@@ -27,6 +27,23 @@
 ##   (3) wrap_ascend() now calls ascend(..., verbose = FALSE); the updated
 ##       ascend() reports progress via message(), which capture.output()
 ##       does not intercept, so this keeps the benchmark log clean.
+##
+## Revision changes:
+##   (4) ascend_score_matrix() and ascend_binary_skeleton() read only
+##       M[i, j] with i < j, so an ASCEND claim oriented x_j -> x_i
+##       (M[j, i] = 1, M[i, j] = 0) was scored as "no edge". Both now read
+##       either direction. The old versions are kept as *_legacy().
+##   (5) ascend_direction_acc() had the same upper-triangle restriction
+##       and also counted false-positive claims as wrong directions. The
+##       orientation metrics now come from eval_metrics.R (orient_acc,
+##       dir_precision/recall/f1, ad_acc, shd); the old value is kept as
+##       direction_acc_legacy.
+##   (6) ASCEND also gets a continuous ranking score (p-value of the last
+##       pairwise R3 test, attr "pair_p"), reported as aupr_cont /
+##       auroc_cont next to the 3-level score.
+##   (7) Paired statistics (mean difference + 95% CI, Wilcoxon, BH within
+##       an explicit family) come from stats_utils.R.
+##   (8) Z_SCALE=1 (default) uses the unit-variance background simulator.
 ## ======================================================================
 
 N_REP <- 50L
@@ -45,6 +62,15 @@ N_CORES <- max(1L, min(detectCores() - 1L, 20L))
 if (!exists("ascend") || !exists("sim_dat")) {
   stop("ascend or sim_dat not found. Source ascend.R first.")
 }
+local({
+  here <- c(".", "..")
+  for (f in c("eval_metrics.R", "stats_utils.R")) {
+    p <- Filter(file.exists, file.path(here, f))
+    if (!length(p)) stop("cannot find ", f)
+    source(p[1], local = globalenv())
+  }
+})
+Z_SCALE <- Sys.getenv("Z_SCALE", "1") == "1"
 
 ## --- Ground truth ---------------------------------------------------------
 
@@ -145,6 +171,34 @@ ascend_score_matrix <- function(M, xlabs) {
   S <- matrix(0L, p, p, dimnames = list(xlabs, xlabs))
   for (i in seq_len(p - 1L)) {
     for (j in (i + 1L):p) {
+      v <- c(M[i, j], M[j, i])
+      score <- if (any(v %in% c(1, 0.5))) 2L
+      else if (all(is.na(v))) 1L
+      else 0L
+      S[i, j] <- score; S[j, i] <- score
+    }
+  }
+  S
+}
+
+# Continuous score: -log10 p of the last R3 test of the pair (larger =
+# stronger conditional dependence), for ranking metrics.
+ascend_cont_score <- function(M, xlabs) {
+  P <- attr(M, "pair_p")
+  if (is.null(P)) return(NULL)
+  P <- P[xlabs, xlabs, drop = FALSE]
+  S <- -log10(pmax(P, 1e-300)); S[is.na(S)] <- 0; diag(S) <- 0
+  S
+}
+
+ascend_score_matrix_legacy <- function(M, xlabs) {
+  p <- length(xlabs)
+  if (!is.null(rownames(M)) && all(xlabs %in% rownames(M)))
+    M <- M[xlabs, xlabs, drop = FALSE]
+  else dimnames(M) <- list(xlabs, xlabs)
+  S <- matrix(0L, p, p, dimnames = list(xlabs, xlabs))
+  for (i in seq_len(p - 1L)) {
+    for (j in (i + 1L):p) {
       v <- M[i, j]
       score <- if (is.na(v)) 1L
       else if (v == 1 || v == 0.5) 2L
@@ -156,6 +210,18 @@ ascend_score_matrix <- function(M, xlabs) {
 }
 
 ascend_binary_skeleton <- function(M, xlabs) {
+  p <- length(xlabs)
+  if (!is.null(rownames(M)) && all(xlabs %in% rownames(M)))
+    M <- M[xlabs, xlabs, drop = FALSE]
+  else dimnames(M) <- list(xlabs, xlabs)
+  A <- matrix(0L, p, p, dimnames = list(xlabs, xlabs))
+  for (i in seq_len(p - 1L)) for (j in (i + 1L):p) {
+    if (any(c(M[i, j], M[j, i]) %in% c(1, 0.5))) { A[i, j] <- 1L; A[j, i] <- 1L }
+  }
+  A
+}
+
+ascend_binary_skeleton_legacy <- function(M, xlabs) {
   p <- length(xlabs)
   if (!is.null(rownames(M)) && all(xlabs %in% rownames(M)))
     M <- M[xlabs, xlabs, drop = FALSE]
@@ -179,8 +245,9 @@ ascend_coverage <- function(M, xlabs) {
   n_res / n_tot
 }
 
-# Of the claimed ancestral edges, what fraction agree with the true
-# ancestral closure (in direction i -> j)?
+# Submitted version, kept for reproduction only: reads M[i, j] with i < j,
+# so claims oriented j -> i are never counted, and false-positive claims are
+# counted as wrong directions. Use eval_ancestral()$orient_acc instead.
 ascend_direction_acc <- function(M, xlabs, A_anc) {
   p <- length(xlabs)
   if (!is.null(rownames(M)) && all(xlabs %in% rownames(M)))
@@ -330,6 +397,7 @@ run_one_rep <- function(sim_obj, rep_id, n_val, sp_val, r2_val) {
   t_wgc <- as.numeric(Sys.time() - t0, units = "secs")
   
   sc_asc <- ascend_score_matrix(M_asc, xlabs)
+  sc_asc_c <- ascend_cont_score(M_asc, xlabs)
   sc_gen <- { W <- pmax(W_gen, t(W_gen)); diag(W) <- 0; W }
   sc_ara <- { W <- pmax(W_ara, t(W_ara)); diag(W) <- 0; W }
   sc_wgc <- { W <- pmax(W_wgc, t(W_wgc)); diag(W) <- 0; W }
@@ -339,6 +407,9 @@ run_one_rep <- function(sim_obj, rep_id, n_val, sp_val, r2_val) {
   au_ara <- compute_auroc(sc_ara, A_skel); ap_ara <- compute_aupr(sc_ara, A_skel)
   au_wgc <- compute_auroc(sc_wgc, A_skel); ap_wgc <- compute_aupr(sc_wgc, A_skel)
   ap_base <- aupr_baseline(A_skel)
+  au_asc_c <- if (is.null(sc_asc_c)) NA_real_ else compute_auroc(sc_asc_c, A_skel)
+  ap_asc_c <- if (is.null(sc_asc_c)) NA_real_ else compute_aupr(sc_asc_c, A_skel)
+  K_match_legacy <- { b <- ascend_binary_skeleton_legacy(M_asc, xlabs); sum(b[upper.tri(b)]) }
   
   bin_asc <- ascend_binary_skeleton(M_asc, xlabs)
   K_match <- sum(bin_asc[upper.tri(bin_asc)])
@@ -353,7 +424,17 @@ run_one_rep <- function(sim_obj, rep_id, n_val, sp_val, r2_val) {
   m_wgc <- prf_from_binary(bin_wgc, A_skel)
   
   cov_asc <- ascend_coverage(M_asc, xlabs)
-  dir_asc <- ascend_direction_acc(M_asc, xlabs, A_anc)
+  dir_asc_legacy <- ascend_direction_acc(M_asc, xlabs, A_anc)
+  
+  # shared metrics (eval_metrics.R): ASCEND scored on its ancestral output,
+  # competitors on their matched-K undirected skeletons
+  if (is.null(rownames(M_asc))) dimnames(M_asc) <- list(xlabs, xlabs)
+  ev <- list(ASCEND = eval_ancestral(M_asc, A_anc),
+             GENIE3 = eval_undirected(bin_gen, A_anc),
+             ARACNE = eval_undirected(bin_ara, A_anc),
+             WGCNA  = eval_undirected(bin_wgc, A_anc))
+  dir_asc <- ev$ASCEND$orient_acc
+  evcol <- function(k) vapply(ev, function(e) as.numeric(e[[k]]), numeric(1))
   
   v <- function(x) if (is.na(x)) "  NA" else sprintf("%.2f", x)
   cat(sprintf("rep %2d | n=%d sp=%.1f r2=%.1f K_true=%d K_match=%d\n",
@@ -387,6 +468,15 @@ run_one_rep <- function(sim_obj, rep_id, n_val, sp_val, r2_val) {
     precision     = c(m_asc$precision, m_gen$precision, m_ara$precision, m_wgc$precision),
     recall        = c(m_asc$recall, m_gen$recall, m_ara$recall, m_wgc$recall),
     direction_acc = c(dir_asc, NA_real_, NA_real_, NA_real_),
+    direction_acc_legacy = c(dir_asc_legacy, NA_real_, NA_real_, NA_real_),
+    K_match_legacy = K_match_legacy,
+    aupr_cont     = c(ap_asc_c, ap_gen, ap_ara, ap_wgc),
+    auroc_cont    = c(au_asc_c, au_gen, au_ara, au_wgc),
+    dir_precision = evcol("dir_precision"), dir_recall = evcol("dir_recall"),
+    dir_f1        = evcol("dir_f1"),        orient_acc = evcol("orient_acc"),
+    orient_undet  = evcol("orient_undet"),  ad_acc     = evcol("ad_acc"),
+    n_reversed    = evcol("n_reversed"),
+    shd           = evcol("shd"),           shd_resolved = evcol("shd_resolved"),
     runtime_s     = c(t_asc, t_gen, t_ara, t_wgc)
   )
 }
@@ -413,9 +503,11 @@ run_full <- function(conditions, n_rep, d_z = 20L, d_x = 15L,
     "prf_from_binary", "topK_skeleton",
     "ascend_score_matrix", "ascend_binary_skeleton",
     "ascend_coverage", "ascend_direction_acc",
+    "ascend_cont_score", "ascend_score_matrix_legacy", "ascend_binary_skeleton_legacy",
+    "eval_ancestral", "eval_undirected", "pair_states", "Z_SCALE",
     "wrap_ascend", "wrap_genie3", "wrap_aracne", "wrap_wgcna",
     "ascend", "sim_dat",
-    "topo_order", "is_dag", "try_edge", "ci_pval", "iamb",
+    "topo_order", "is_dag_custom", "try_edge", "ci_pval", "iamb",
     "true_ancestral"
   )
   worker_fns <- worker_fns[sapply(worker_fns, exists)]
@@ -442,7 +534,7 @@ run_full <- function(conditions, n_rep, d_z = 20L, d_x = 15L,
         tryCatch({
           sim <- sim_dat(n = n_val, d_z = d_z, d_x = d_x, r2 = r2_val,
                          lin_pr = 1, sp = sp_val,
-                         p_cross = p_cross, x_effect = x_effect)
+                         p_cross = p_cross, x_effect = x_effect, z_scale = Z_SCALE)
           run_one_rep(sim, r, n_val, sp_val, r2_val)
         }, error = function(e) {
           list(error = conditionMessage(e), rep = r)
@@ -456,7 +548,7 @@ run_full <- function(conditions, n_rep, d_z = 20L, d_x = 15L,
         rep_list[[r]] <- tryCatch({
           sim <- sim_dat(n = n_val, d_z = d_z, d_x = d_x, r2 = r2_val,
                          lin_pr = 1, sp = sp_val,
-                         p_cross = p_cross, x_effect = x_effect)
+                         p_cross = p_cross, x_effect = x_effect, z_scale = Z_SCALE)
           run_one_rep(sim, r, n_val, sp_val, r2_val)
         }, error = function(e) {
           cat(sprintf("  rep %d failed: %s\n", r, conditionMessage(e)))
@@ -636,12 +728,26 @@ main_res <- run_full(
   parallel  = TRUE
 )
 
-fwrite(main_res, "benchmark_v2_main_raw.csv")
+fwrite(main_res, "benchmark_v3_main_raw.csv")
 print_all_cells(main_res)
 
 wilcox_all <- rbindlist(lapply(
   c("aupr", "auroc", "f1"),
   function(mn) wilcoxon_tests(main_res, mn)
 ), use.names = TRUE, fill = TRUE)
-fwrite(wilcox_all, "benchmark_v2_wilcoxon.csv")
+fwrite(wilcox_all, "benchmark_v3_wilcoxon.csv")
+
+# Paired mean differences with 95% bootstrap CIs, two-sided Wilcoxon, and BH
+# within one family per metric (all cells x competitors of that metric).
+paired_all <- paired_table(main_res,
+                           metrics   = c("f1", "precision", "recall", "aupr", "auroc",
+                                         "aupr_cont", "auroc_cont"),
+                           cell_cols = c("n", "sp", "r2"), ref = "ASCEND",
+                           alternative = "two.sided", family_by = "metric")
+fwrite(paired_all, "benchmark_v3_paired.csv")
+fwrite(summary_table(main_res,
+                     c("aupr", "auroc", "aupr_cont", "auroc_cont", "f1", "precision",
+                       "recall", "coverage", "orient_acc", "dir_f1", "shd", "runtime_s"),
+                     c("n", "sp", "r2")),
+       "benchmark_v3_summary.csv")
 cat("\nWrote benchmark_v2_main_raw.csv and benchmark_v2_wilcoxon.csv\n")
