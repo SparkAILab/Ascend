@@ -8,16 +8,25 @@
 ## ======================================================================
 options(repos = c(CRAN = "https://cloud.r-project.org"), Ncpus = 4)
 cran <- c("data.table", "jsonlite", "dplyr", "tidyverse", "foreach", "doMC", "glmnet",
-          "lightgbm", "matrixStats", "R.utils", "PRROC", "ppcor", "bnlearn", "WGCNA",
+          "lightgbm", "matrixStats", "R.utils", "PRROC", "ppcor", "bnlearn",
           "ggplot2", "igraph", "BiocManager")
-bioc <- c("graph", "RBGL", "minet", "GENIE3", "impute", "preprocessCore", "GO.db")
-need <- setdiff(cran, rownames(installed.packages()))
-if (length(need)) install.packages(need)
-need <- setdiff(bioc, rownames(installed.packages()))
-if (length(need)) BiocManager::install(need, update = FALSE, ask = FALSE)
-for (p in c("pcalg", "tpc")) if (!p %in% rownames(installed.packages())) install.packages(p)
+bioc <- c("graph", "RBGL", "minet", "GENIE3", "impute", "preprocessCore", "GO.db", "AnnotationDbi")
+have <- function() rownames(installed.packages())
+# one package at a time, so one failure does not stop the others and its
+# compiler error is printed right above the next package
+inst <- function(pkgs, fun) for (p in setdiff(pkgs, have())) {
+  cat("\n==== installing", p, "\n")
+  try(fun(p))
+}
+inst("BiocManager", install.packages)
+inst(cran, install.packages)
+inst(bioc, function(p) BiocManager::install(p, update = FALSE, ask = FALSE))
+# WGCNA depends on the Bioconductor packages above, so it goes last
+inst(c("WGCNA", "pcalg", "tpc"), install.packages)
+cran <- c(cran, "WGCNA")
 all <- c(cran, bioc, "pcalg", "tpc")
 ok <- vapply(all, requireNamespace, logical(1), quietly = TRUE)
 print(ok)
-if (!all(ok)) stop("Not installed: ", paste(all[!ok], collapse = ", "))
+if (!all(ok)) stop("Not installed: ", paste(all[!ok], collapse = ", "),
+                   ". Scroll up to its ==== line for the compiler error.")
 cat("All R packages installed.\n")

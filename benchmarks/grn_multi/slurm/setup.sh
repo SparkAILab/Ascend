@@ -20,11 +20,15 @@ echo "== Python env in $GRNM_VENV"
 "$GRNM_PYTHON" -c "import arboreto, regdiffusion, astropy, sklearn; print('python ok')"
 
 echo "== R packages in $R_LIBS_USER"
-Rscript benchmarks/grn_multi/install_R_packages.R
+Rscript benchmarks/grn_multi/install_R_packages.R || R_FAILED=1
 
 echo "== SERGIO datasets in $GRNM_SERGIO (about 1.7 GB)"
 [[ -d "$GRNM_SERGIO/data_sets" ]] || git clone --depth 1 https://github.com/PayamDiba/SERGIO.git "$GRNM_SERGIO"
 
+if [[ "${R_FAILED:-0}" == 1 ]]; then
+  echo "SETUP INCOMPLETE: some R packages did not install (see above). Fix those, then run setup.sh again." >&2
+  exit 1
+fi
 echo "== tests"
 Rscript tests/test_metrics.R > /dev/null && Rscript tests/test_grn_multi.R
 echo "Setup complete. Next: sbatch benchmarks/grn_multi/slurm/test_pipeline.sbatch"

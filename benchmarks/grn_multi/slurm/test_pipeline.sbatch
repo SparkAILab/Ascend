@@ -21,11 +21,13 @@ set -uo pipefail
 cd "${SLURM_SUBMIT_DIR:-.}"
 source benchmarks/grn_multi/slurm/env.sh
 export GRNM_TEST=1
+export GRNM_RETRY_ERRORS=1   # a re-run of the test retries what failed; finished runs are kept
 export GRNM_WORK="$(dirname "$GRNM_WORK")/grn_multi_test"
 W=${SLURM_CPUS_PER_TASK:-8}
 
-Rscript benchmarks/grn_multi/01_make_datasets.R
-"$GRNM_PYTHON" benchmarks/grn_multi/py/make_sergio.py --sergio "$GRNM_SERGIO" --ds DS1,DS2 --reps 1
+Rscript benchmarks/grn_multi/01_make_datasets.R || { echo "dataset simulation failed" >&2; exit 1; }
+"$GRNM_PYTHON" benchmarks/grn_multi/py/make_sergio.py --sergio "$GRNM_SERGIO" --ds DS1,DS2 --reps 1 \
+  || { echo "SERGIO datasets failed: is $GRNM_SERGIO there? (setup.sh clones it)" >&2; exit 1; }
 GRNM_CPUS=$W Rscript benchmarks/grn_multi/02_make_tasks.R
 for c in $(tail -n +2 "$GRNM_WORK/chunks.csv" | cut -d, -f1); do
   bash benchmarks/grn_multi/run_chunk.sh "$c" "$W"
