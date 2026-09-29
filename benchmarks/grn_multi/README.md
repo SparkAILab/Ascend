@@ -137,7 +137,7 @@ This submits three things in order:
 2. **Array job:** one job per chunk, each with a 48 h limit.
 3. **Scoring job:** starts after all array jobs finish.
 
-Each single run also has its own time budget (`budget_h` in `config.R`; ×3 on SERGIO DS2). A run that exceeds it is recorded as `timeout` and does not hold up the rest.
+Each single run also has its own time budget (`budget_h` in `config.R`; ×3 on SERGIO DS2). A run that exceeds it is recorded as `timeout` and does not hold up the rest. Tiered PC did not finish SERGIO DS1 (100 genes) in 6 h in the test, so it is not run on DS2 (400 genes); CBL is not run on `large` or DS2 for the same reason. These are reported as not run, which itself documents the run-time comparison.
 
 **4. If a job is killed or times out.** Run `submit_all.sh` again. Finished runs are never repeated, and only unfinished tasks are re-packed and submitted. To retry the failed runs too, run:
 ```bash

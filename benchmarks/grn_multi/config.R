@@ -99,7 +99,7 @@ PRIMARY <- list(arm = "lin", n = 2000L, sp = 0.9, r2 = 0.7)
 METHODS <- read.csv(text = "
 method,       label,        lang, class,      budget_h, skip_arms,  reference
 ascend,       ASCEND,       R,    causal,     6,        ,           this paper
-pc_tiered,    Tiered PC,    R,    causal,     6,        ,           Spirtes et al. 2001; tpc: Witte et al. 2022
+pc_tiered,    Tiered PC,    R,    causal,     6,        sergio_DS2,          Spirtes et al. 2001; tpc: Witte et al. 2022
 hc_tiered,    Tiered HC,    R,    causal,     6,        ,           score-based (BIC) hill climbing with tier blacklist; bnlearn (Scutari 2010)
 ges,          GES,          R,    causal,     6,        ,           Chickering 2002; pcalg (no tier constraint)
 cbl,          CBL,          R,    causal,     24,       large;sergio_DS2, Watson & Silva 2022
