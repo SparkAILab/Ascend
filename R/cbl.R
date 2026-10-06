@@ -26,7 +26,7 @@ library(RBGL)
 library(matrixStats)
 library(glmnet)
 library(lightgbm)
-library(tidyverse)
+library(dplyr)          # only dplyr verbs are used (was tidyverse)
 library(doMC)
 registerDoMC(as.integer(Sys.getenv("N_CORES", "16")))   # N_CORES=4 on a laptop
 

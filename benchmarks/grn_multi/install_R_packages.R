@@ -7,7 +7,14 @@
 ## first if you want a specific location.
 ## ======================================================================
 options(repos = c(CRAN = "https://cloud.r-project.org"), Ncpus = 4)
-cran <- c("data.table", "jsonlite", "dplyr", "tidyverse", "foreach", "doMC", "glmnet",
+# fs (needed by WGCNA through Hmisc) looks for a system libuv; clusters often
+# lack it, so build the copy bundled with the package instead
+Sys.setenv(USE_BUNDLED_LIBUV = "1")
+# lock folders left by an interrupted install block every later install
+lib <- .libPaths()[1]
+stale <- list.files(lib, pattern = "^00LOCK", full.names = TRUE)
+if (length(stale)) { cat("removing stale locks:", basename(stale), "\n"); unlink(stale, recursive = TRUE) }
+cran <- c("data.table", "jsonlite", "dplyr", "foreach", "doMC", "glmnet",
           "lightgbm", "matrixStats", "R.utils", "PRROC", "ppcor", "bnlearn",
           "ggplot2", "igraph", "BiocManager")
 bioc <- c("graph", "RBGL", "minet", "GENIE3", "impute", "preprocessCore", "GO.db", "AnnotationDbi")
