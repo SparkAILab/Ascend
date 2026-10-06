@@ -19,7 +19,9 @@ echo "== Python env in $GRNM_VENV"
 "$GRNM_PYTHON" -m pip install -r benchmarks/grn_multi/requirements.txt
 "$GRNM_PYTHON" -c "import arboreto, regdiffusion, astropy, sklearn; print('python ok')"
 
-echo "== R packages in $R_LIBS_USER"
+echo "== R packages in ${R_LIBS_USER%%:*}"
+# cmake builds the libuv bundled with the fs package (no system libuv on CREATE)
+module load cmake 2>/dev/null || true
 Rscript benchmarks/grn_multi/install_R_packages.R || R_FAILED=1
 
 echo "== SERGIO datasets in $GRNM_SERGIO (about 1.7 GB)"
