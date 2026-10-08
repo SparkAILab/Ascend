@@ -13,7 +13,7 @@
 ## Output (WORK/results/paper/):
 ##   tab_primary.tex       Table 1: main panel at the primary cell
 ##   tab_sweep.tex         Table 2: ASCEND vs best main-panel competitor, 12 cells
-##   tab_arms.tex          Table 3: main panel pooled over the other arms
+##   tab_arms.tex          Table 3: main panel, large arm and SERGIO (non-linear arm in tabS_arms_all)
 ##   tabS_primary_all.tex  all 16 methods at the primary cell (supplement)
 ##   tabS_arms_all.tex     all 16 methods pooled per arm (supplement)
 ##   tabS_direct.tex       all 16 methods, direct-edge truth (supplement)
@@ -138,7 +138,7 @@ arm_table <- function(methods, arms = c("nonlin", "large")) {
             "DS1", "DS2", "DS1$^{n}$", "DS2$^{n}$"), collapse = " & "),
     "\\\\\\midrule", paste0(rows, " \\\\"), "\\bottomrule", "\\end{tabular}")
 }
-write_tex(arm_table(MAIN), "tab_arms.tex")
+write_tex(arm_table(MAIN, "large"), "tab_arms.tex")   # non-linear arm: Supplement only
 write_tex(arm_table(ALL, c("lin", "nonlin", "large")), "tabS_arms_all.tex")
 
 ## ---- AUPR and AUROC in every lin cell, every method (comment 2) --------------

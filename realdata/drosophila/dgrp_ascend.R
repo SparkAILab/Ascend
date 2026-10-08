@@ -2,9 +2,9 @@
 ## realdata/drosophila/dgrp_ascend.R
 ## DGRP (Drosophila) real-data analysis: SNPs as background, expression as foreground.
 ##
-## Reviewer comments: 7 (DGRP controls: not yet done), minor 3 (gene IDs), minor 7 (gene filtering)
-## Revision notes: Only paths changed: ascend.R is sourced from R/. The DGRP control
-##   analyses for comment 7 are still to do and need the data files.
+## Reviewer comments: minor 3 (gene IDs), minor 7 (gene filtering); the comment 7 controls are in dgrp_controls.R (see README.md)
+## Revision notes: Only paths changed: ascend.R is sourced from R/. The DGRP controls
+##   reuse the same filtering through dgrp_data.R.
 ## How to run: Put dgrp2.tgeno.txt and GSE117850_DGRP_GEO_Table_4_Gene_Male_Line_Means.txt.gz
 ##   in realdata/drosophila/ (gitignored), then: cd realdata/drosophila && Rscript dgrp_ascend.R
 ## Full write-up: docs/REVISION_REPORT.md

@@ -9,7 +9,8 @@
 ##   the tests, time per test, conditioning-set sizes, true max in-degree,
 ##   and the shared eval_ancestral() metrics. Uses the fixed simulator.
 ## How to run: Rscript benchmarks/cbl/run_ascend_vs_cbl.R    (resumable)
-##   BENCH_QUICK=1 ... (smoke test), BENCH_SEEDS, BENCH_TIMEOUT, BENCH_METHODS, BENCH_OUT, Z_SCALE
+##   BENCH_QUICK=1 ... (smoke test), BENCH_SEEDS, BENCH_TIMEOUT, BENCH_METHODS, BENCH_OUT, Z_SCALE,
+##   BENCH_SHARD=i/N (one slice of the configurations; used by run_ascend_vs_cbl.sbatch)
 ##   Writes benchmarks/cbl/results/results_ascend_vs_cbl_v2.csv
 ## Full write-up: docs/REVISION_REPORT.md
 ## ======================================================================
@@ -283,6 +284,13 @@ plan <- CJ(method  = METHODS,
            seed    = 100L + seq_len(SEEDS))
 plan <- merge(plan, configs[, .(cfg_idx = .I, n, d_x, d_z)], by = "cfg_idx")
 setorder(plan, n, d_x, d_z, method, seed)
+## BENCH_SHARD="i/N": run only configurations i, i+N, i+2N, ... so a SLURM
+## array can split the sweeps (see run_ascend_vs_cbl.sbatch)
+shard <- Sys.getenv("BENCH_SHARD", "")
+if (nzchar(shard)) {
+  sh <- as.integer(strsplit(shard, "/")[[1]])
+  plan <- plan[(cfg_idx - 1L) %% sh[2] == sh[1] - 1L]
+}
 
 cat(sprintf("[plan] %d cells total (%d configs x %d methods x %d seeds)\n",
             nrow(plan), nrow(configs), length(METHODS), SEEDS))

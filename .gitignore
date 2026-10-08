@@ -15,3 +15,5 @@
 /logs_grnm
 grnm_*.out
 __pycache__/
+!/realdata/drosophila/slurm/
+dgrp_*.out

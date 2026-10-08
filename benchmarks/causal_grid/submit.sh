@@ -22,12 +22,13 @@
 #SBATCH --cpus-per-task=1        # methods run serially; 1 core packs best
 #SBATCH --mem=8G                 # generic default; large-n bands need more
 #SBATCH --time=12:00:00          # generic default; large-n bands need more
-# #SBATCH --partition=<your_partition>    # uncomment + set if required
+#SBATCH --partition=cpu          # CREATE; change if your partition differs
 # #SBATCH --account=<your_account>        # uncomment + set if required
 
 set -uo pipefail                  # NB: no -e (module functions can return nonzero)
 
-module load r/4.3.1               # <-- match `module avail r` on the cluster
+# modules and R library of the CREATE setup (benchmarks/grn_multi/slurm/env.sh)
+source ../grn_multi/slurm/env.sh
 
 mkdir -p logs results
 

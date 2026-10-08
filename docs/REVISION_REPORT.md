@@ -529,21 +529,22 @@ The new version is better defended and harder for a reviewer to break. The weak 
 
 ## 12. Reviewer comment tracker
 
-| comment | status | where |
+| comment | status (8 Oct 2026) | where |
 |---|---|---|
-| 1 Baselines (CLR, MRNET, GRNBoost2, PIDC, deep, direction-aware) | code done, needs cluster run | `benchmarks/grn_multi/` (16 methods) |
-| 2 AUROC/AUPR everywhere, oriented metrics, SHD | code done, needs re-run | `R/eval_metrics.R`, all benchmarks |
-| 3 BEELINE alignment | code done (SERGIO DS1/DS2 arm, BEELINE metrics), needs cluster run | `benchmarks/grn_multi/py/make_sergio.py` |
-| 4 Tier misassignment / incomplete / feedback | done (pilot, 10 seeds) | section 5 |
-| 5 Complexity | empirical side done; the theorem is writing | section 4 |
-| 6 Number of tests vs cost per test | done (pilot) | section 4 |
-| 7 DGRP controls | not started; needs your DGRP files | `realdata/drosophila/` |
-| 8 Yeast evaluation | not started; needs BFCS data | `realdata/yeast/` |
-| 9 Paired differences, CIs, families, SE | code done, needs re-run | `R/stats_utils.R`, `analysis/revision_tables.R` |
-| 10 Background-knowledge literature | writing | — |
-| 11 Orientation drivers | done (pilot, 10 seeds) | section 6 |
-| minor 5 Fig. 2 caption: F1 only | code gives the paired F1 table; caption is writing | `analysis/revision_tables.R` |
-| minor 6 Runtime vs discovered edges | code done, needs re-run | fig7 |
-| minor 9 Coverage definition and table | code done | `R/eval_metrics.R`, `coverage_table.csv` |
-| minor 10 Is 99% coverage desirable? | not started | — |
-| minors 1–4, 7, 8, 11, 12 | writing (minor 8 can use sections 5–6) | — |
+| 1 Baselines (CLR, MRNET, GRNBoost2, PIDC, deep, direction-aware) | done: full CREATE run; 10 competitors in the main text, 5 in the Supplement | `benchmarks/grn_multi/` |
+| 2 AUROC/AUPR everywhere, oriented metrics, SHD | done (GRN benchmark); causal grid needs its CREATE re-run | `R/eval_metrics.R`, `benchmarks/grn_multi/06_paper_tables.R` |
+| 3 BEELINE alignment | done (SERGIO DS1/DS2 arm, BEELINE metrics) | `benchmarks/grn_multi/py/make_sergio.py` |
+| 4 Tier misassignment / incomplete / feedback | done (30 seeds) | section 5, `docs/results_local/` |
+| 5 Complexity | done (theorem and proof in the manuscript; empirical scaling 20 seeds) | section 4 |
+| 6 Number of tests vs cost per test | ASCEND side done (20 seeds); CBL side needs the CREATE run of `benchmarks/cbl/run_ascend_vs_cbl.R` | section 4 |
+| 7 DGRP controls | code done and tested on fake data; needs the CREATE run | `realdata/drosophila/README.md` |
+| 8 Yeast evaluation | code done (separate direct and ancestral panels); needs a run with the BFCS data folder | `realdata/yeast/` |
+| 9 Paired differences, CIs, families, SE | done | `R/stats_utils.R`, `benchmarks/grn_multi/04_summarise.R` |
+| 10 Background-knowledge literature | done (writing) | manuscript Introduction |
+| 11 Orientation drivers | done (20 seeds) | section 6 |
+| minor 5 Fig. 2 caption: F1 only | done (writing) | — |
+| minor 6 Runtime vs discovered edges | code done; redraw after the causal grid re-run | `analysis/make_report_figures.R` |
+| minor 7 Gene counts and flow diagram | DGRP counts come from the DGRP control run (`dgrp_flow.csv`) | `realdata/drosophila/` |
+| minor 9 Coverage definition and table | done | `R/eval_metrics.R` |
+| minor 10 Is 99% coverage desirable? | done (writing) | — |
+| minors 1–4, 8, 11, 12 | done (writing); minor 3 FlyBase ID to confirm | — |
