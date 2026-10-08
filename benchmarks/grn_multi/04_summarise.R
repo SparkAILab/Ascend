@@ -36,6 +36,9 @@ runs <- fread(file.path(RES_DIR, "runs.csv"))
 mets <- fread(file.path(RES_DIR, "metrics_long.csv.gz"))
 cellcols <- c("arm", "n", "sp", "r2", "ds", "noise")
 info <- unique(runs[, c("dataset", cellcols, "rep", "d_x", "d_z"), with = FALSE])
+## SERGIO cells are ds x noise; n varies by a few cells per noisy replicate
+## (cells dropped by the noise model) and must not split the cell
+info[arm == "sergio", n := NA]
 lab  <- setNames(METHODS$label, METHODS$method)
 cls  <- setNames(METHODS$class, METHODS$method)
 

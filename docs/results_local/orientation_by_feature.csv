@@ -1,0 +1,25 @@
+"feature","level","pairs","orient_acc"
+"X-parents of descendant","1",554,0.891696750902527
+"X-parents of descendant","2",1063,0.788334901222954
+"X-parents of descendant","3",960,0.685416666666667
+"X-parents of descendant","4+",2632,0.606382978723404
+"Z-parents of descendant","0",37,0.810810810810811
+"Z-parents of descendant","1-2",564,0.789007092198582
+"Z-parents of descendant","3-5",2431,0.689839572192513
+"Z-parents of descendant","6+",2177,0.658704639412035
+"shares a direct parent","no",2152,0.769981412639405
+"shares a direct parent","yes",3057,0.631010794896958
+"foreground common ancestor","no",2510,0.834262948207171
+"foreground common ancestor","yes",2699,0.552797332345313
+"directed paths","1",2884,0.709084604715673
+"directed paths","2",855,0.651461988304094
+"directed paths","3+",1470,0.669387755102041
+"adjacency","ancestral only",1979,0.669530065689742
+"adjacency","direct edge",3230,0.7
+"|partial cor| given Z parents","<0.05",805,0.714285714285714
+"|partial cor| given Z parents","0.05-0.1",851,0.642773207990599
+"|partial cor| given Z parents","0.1-0.2",1489,0.644728005372733
+"|partial cor| given Z parents",">0.2",2064,0.728682170542636
+"committing rule","R1",2915,0.791080617495712
+"committing rule","R2",438,0.392694063926941
+"committing rule","transitivity",1856,0.59698275862069
