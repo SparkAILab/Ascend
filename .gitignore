@@ -1,5 +1,19 @@
+# local data (never committed)
 /dataset
-/drosophila
 /rat_smoke
 /rat_kidney
+/realdata/drosophila/*
+!/realdata/drosophila/*.R
+!/realdata/drosophila/README.md
+# generated outputs
 /analysis/out
+/benchmarks/causal_grid/results
+/benchmarks/causal_grid/logs
+.Rhistory
+/benchmarks/grn_multi/work
+/benchmarks/grn_multi/work_test
+/logs_grnm
+grnm_*.out
+__pycache__/
+!/realdata/drosophila/slurm/
+dgrp_*.out

@@ -1,11 +1,22 @@
 ## ======================================================================
+## analysis/revision_tables.R
+## Builds the revision tables and figures from the benchmark CSVs.
+##
+## Reviewer comments: 2, 9, minor 5 (GRN tables with CIs), minor 9 (coverage table), minor 6 (runtime vs edges), 5 and 6 (compute cost)
+## Revision notes: Uses re-run results when present, otherwise the submitted results.
+## How to run: Rscript analysis/revision_tables.R  -> analysis/out/
+## Full write-up: docs/REVISION_REPORT.md
+## ======================================================================
+
+## ======================================================================
 ## Revision tables and figures from benchmark CSVs
 ## ----------------------------------------------------------------------
-## Run from the repository root:
+## Run from anywhere inside the repository:
 ##   Rscript analysis/revision_tables.R
 ##
-## Reads whichever result files exist (v3 = re-runs with the revision
-## code, v2 / results.csv / merged = submitted runs) and writes to
+## Reads whichever result files exist, preferring the re-runs made with
+## the revision code (benchmarks/*/results/) and falling back to the
+## submitted runs (benchmarks/*/results_submitted/). Writes to
 ## analysis/out/:
 ##   grn_summary.csv          mean +/- SE of every metric, every method and
 ##                            cell (AUROC and AUPR for all cells; SE on
@@ -19,17 +30,26 @@
 ##                            for ASCEND and CBL                 [R2 m9]
 ##   runtime_vs_edges.pdf     wall-clock runtime against number of claimed
 ##                            edges, per method                  [R2 m6]
-##   ablation_cost.csv / .pdf ASCEND vs ASCEND-full vs CBL: CI tests, time
-##                            per test, conditioning-set size   [R2 c5, c6]
+##   compute_cost.csv / .pdf  ASCEND vs CBL: CI tests, time per test and
+##                            conditioning-set size             [R2 c5, c6]
 ## ======================================================================
 
 suppressPackageStartupMessages({
   library(data.table)
   library(ggplot2)
 })
-source("stats_utils.R")
+ROOT <- local({
+  d <- normalizePath(getwd())
+  while (!file.exists(file.path(d, "R", "ascend.R"))) {
+    if (dirname(d) == d) stop("Run this script from inside the Ascend repository")
+    d <- dirname(d)
+  }
+  d
+})
+source(file.path(ROOT, "R", "stats_utils.R"))
+B <- function(...) file.path(ROOT, "benchmarks", ...)
 
-OUT <- "analysis/out"
+OUT <- file.path(ROOT, "analysis", "out")
 dir.create(OUT, recursive = TRUE, showWarnings = FALSE)
 first_existing <- function(...) { f <- Filter(file.exists, c(...)); if (length(f)) f[1] else NA_character_ }
 say <- function(...) cat(sprintf(...), "\n")
@@ -37,8 +57,8 @@ say <- function(...) cat(sprintf(...), "\n")
 ## ---------------------------------------------------------------------
 ## 1. GRN benchmark (ASCEND vs GENIE3 / ARACNe / WGCNA, ...)
 ## ---------------------------------------------------------------------
-grn_file <- first_existing("GRN comparison/benchmark_v3_main_raw.csv",
-                           "GRN comparison/benchmark_v2_main_raw.csv")
+grn_file <- first_existing(B("grn", "results", "benchmark_v3_main_raw.csv"),
+                           B("grn", "results_submitted", "benchmark_v2_main_raw.csv"))
 if (!is.na(grn_file)) {
   say("[grn] %s", grn_file)
   g <- fread(grn_file)
@@ -75,7 +95,8 @@ if (!is.na(grn_file)) {
 ## ---------------------------------------------------------------------
 ## 2. Coverage table, ASCEND vs CBL
 ## ---------------------------------------------------------------------
-cbl_file <- first_existing("ascendCBL/results_ascend_vs_cbl_v2.csv", "ascendCBL/results.csv")
+cbl_file <- first_existing(B("cbl", "results", "results_ascend_vs_cbl_v2.csv"),
+                           B("cbl", "results_submitted", "results_ascend_vs_cbl.csv"))
 if (!is.na(cbl_file)) {
   say("[cbl] %s", cbl_file)
   cb <- fread(cbl_file)[status == "ok"]
@@ -88,7 +109,8 @@ if (!is.na(cbl_file)) {
   setorder(cov_tab, n, d_x, d_z, method)
   fwrite(cov_tab, file.path(OUT, "coverage_table.csv"))
 
-  ## 4. conditioning-set ablation / computational work
+  ## computational work: CI tests, time per test, conditioning-set size
+  ## (only in re-runs, which record time_per_test)
   if ("time_per_test" %in% names(cb)) {
     ab <- cb[, .(runs = .N, time_sec = mean(time_sec), n_ci_tests = mean(n_ci_tests),
                  time_per_test = mean(time_per_test, na.rm = TRUE),
@@ -96,21 +118,21 @@ if (!is.na(cbl_file)) {
                  max_pair_cond = mean(max_pair_cond, na.rm = TRUE),
                  dir_f1 = mean(dir_f1, na.rm = TRUE)),
              by = .(method, n, d_x, d_z)]
-    fwrite(ab, file.path(OUT, "ablation_cost.csv"))
+    fwrite(ab, file.path(OUT, "compute_cost.csv"))
     abl <- melt(ab[n == 1024 & d_x == 5], id.vars = c("method", "d_z"),
                 measure.vars = c("time_sec", "n_ci_tests", "time_per_test", "mean_cond_size"))
     p <- ggplot(abl, aes(d_z, value, colour = method)) + geom_line() + geom_point() +
       facet_wrap(~variable, scales = "free_y") + scale_y_log10() +
       labs(x = expression(d[z]), y = NULL, colour = NULL) + theme_bw()
-    ggsave(file.path(OUT, "ablation_cost.pdf"), p, width = 8, height = 5)
+    ggsave(file.path(OUT, "compute_cost.pdf"), p, width = 8, height = 5)
   }
 }
 
 ## ---------------------------------------------------------------------
 ## 3. Runtime against discovered edge count
 ## ---------------------------------------------------------------------
-cd_file <- first_existing("causal benchmarks/ascend_benchmark_v3_merged.csv",
-                          "causal benchmarks/ascend_benchmark_merged.csv")
+cd_file <- first_existing(B("causal_grid", "ascend_benchmark_v3_merged.csv"),
+                          B("causal_grid", "results_submitted", "ascend_benchmark_merged.csv"))
 if (!is.na(cd_file)) {
   say("[causal] %s", cd_file)
   cd <- fread(cd_file)[status == "ok"]
