@@ -58,9 +58,11 @@ paired_compare <- function(x, y, alternative = "two.sided", B = 5000L) {
   out$mean_diff   <- mean(d)
   out$median_diff <- median(d)
   ci <- boot_ci_mean(d, B = B); out$ci_lo <- ci[1]; out$ci_hi <- ci[2]
-  if (sd(d) > 0) {
-    tt <- t.test(d); out$t_lo <- tt$conf.int[1]; out$t_hi <- tt$conf.int[2]
-  } else { out$t_lo <- out$t_hi <- d[1] }
+  # t.test refuses differences that are constant up to rounding (sd > 0 but
+  # tiny next to the mean, e.g. two methods tying in every replicate)
+  tt <- if (sd(d) > 0) tryCatch(t.test(d), error = function(e) NULL) else NULL
+  if (!is.null(tt)) { out$t_lo <- tt$conf.int[1]; out$t_hi <- tt$conf.int[2] }
+  else out$t_lo <- out$t_hi <- mean(d)
   out$p_wilcox <- if (any(d != 0))
     suppressWarnings(wilcox.test(x[ok], y[ok], paired = TRUE,
                                  alternative = alternative, exact = FALSE)$p.value)
