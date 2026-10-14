@@ -1,0 +1,52 @@
+Package: causalASCEND
+Type: Package
+Title: Scalable Two-Tier Causal Discovery for Multi-Omic Data
+Version: 0.99.0
+Authors@R: c(
+    person("Stephen", "Asiedu", role = c("aut", "cre"),
+        email = "stephen.asiedu@kcl.ac.uk",
+        comment = c(ORCID = "0009-0005-8885-5381")),
+    person("David", "Watson", role = "aut",
+        email = "david.watson@kcl.ac.uk"))
+Description: Causal ASCEND (Ancestral Scalable Causal discovEry via
+    iNherited Descent) infers ancestral (cause-before-effect) relations
+    among downstream molecular variables, such as gene expression, when
+    a layer of upstream variables, such as genotypes or methylation
+    sites, is known to precede them. Each conditional independence test
+    conditions only on a small, iteratively refined set of nearest
+    ancestors instead of the whole upstream layer, so the number of
+    tests grows polynomially with the number of variables. The package
+    accepts matrices, SummarizedExperiment objects or a
+    MultiAssayExperiment, and returns the ancestral relations with the
+    rule and evidence behind each one.
+Depends: R (>= 4.5.0)
+License: GPL-3
+Encoding: UTF-8
+Imports:
+    methods,
+    stats,
+    SummarizedExperiment,
+    utils
+Suggests:
+    BiocStyle,
+    knitr,
+    MultiAssayExperiment,
+    rmarkdown,
+    testthat (>= 3.0.0)
+VignetteBuilder: knitr
+biocViews: GraphAndNetwork, NetworkInference, Network, SystemsBiology,
+    GeneExpression, Transcriptomics, SNP, GeneticVariability,
+    MultipleComparison, Software
+URL: https://github.com/SparkAILab/causalASCEND
+BugReports: https://github.com/SparkAILab/causalASCEND/issues
+Config/testthat/edition: 3
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.1
+Collate: 
+    'AllClasses.R'
+    'accessors.R'
+    'ascend.R'
+    'causalASCEND-package.R'
+    'engine.R'
+    'evaluate.R'
+    'simulate.R'

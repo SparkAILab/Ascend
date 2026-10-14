@@ -1,0 +1,205 @@
+---
+title: "Two-tier causal discovery with causalASCEND"
+author:
+- name: Stephen Asiedu
+  affiliation: Department of Informatics, King's College London
+  email: stephen.asiedu@kcl.ac.uk
+- name: David Watson
+  affiliation: Department of Informatics, King's College London
+package: causalASCEND
+output:
+  BiocStyle::html_document
+abstract: >
+  Causal ASCEND infers which downstream molecular variables are causal
+  ancestors of which, using an upstream layer that is known to precede
+  them. This vignette shows how to run it on matrices,
+  SummarizedExperiment and MultiAssayExperiment objects, how to read its
+  output, and which settings matter.
+vignette: >
+  %\VignetteIndexEntry{Two-tier causal discovery with causalASCEND}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+# Introduction
+
+Many multi-omic studies measure two layers of the same samples, where one
+layer is known to act before the other: genotypes or DNA methylation
+(the *background*) come before gene expression (the *foreground*).
+Causal ASCEND (Ancestral Scalable Causal discovEry via iNherited Descent;
+ASCEND for short) uses that order to infer the causal order among the
+foreground variables. For every pair of foreground variables it decides
+whether one is a causal ancestor of the other, whether they are causally
+unrelated, or leaves the pair unresolved.
+
+Each conditional independence test conditions only on the *nearest
+ancestors* of the two variables, which ASCEND learns from the data and
+refines over several sweeps, rather than on the whole background layer.
+This keeps every test small, so the method scales to thousands of
+background variables.
+
+ASCEND assumes that
+
+1. no foreground variable causes a background variable, and
+2. the data are Markov and faithful to a directed acyclic graph.
+
+Its tests are Fisher-z partial-correlation tests, so it targets linear
+relations. Background variables that were not measured act as hidden
+confounders and lower its accuracy.
+
+# Installation
+
+```{r install, eval = FALSE}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("causalASCEND")
+```
+
+# A first analysis
+
+We simulate a two-tier system with 20 background and 15 foreground
+variables measured on 2,000 samples. Matrices have features in rows and
+samples in columns, as in other Bioconductor containers.
+
+```{r simulate}
+library(causalASCEND)
+set.seed(1)
+sim <- simulateTwoTier(n = 2000, nBackground = 20, nForeground = 15,
+    r2 = 0.7, sparsity = 0.9, pCross = 0.2, effect = 0.9)
+dim(sim$background)
+dim(sim$foreground)
+```
+
+`ascend()` takes the two layers and returns an `AscendResult`.
+
+```{r run}
+res <- ascend(sim$background, sim$foreground)
+res
+```
+
+# Reading the result
+
+`ancestralEdges()` lists the relations ASCEND committed to, with the rule
+that produced each one and its evidence.
+
+```{r edges}
+edges <- ancestralEdges(res)
+head(edges)
+table(edges$relation, edges$rule)
+```
+
+The relations are:
+
+* `ancestor`: `from` is a causal ancestor of `to` (a direct or indirect
+    cause);
+* `non-descendant`: `from` is not caused by `to`, but ASCEND could not
+    show that it causes `to`;
+* `unrelated` and `unresolved` pairs are returned on request:
+
+```{r all-relations}
+all <- ancestralEdges(res, include = c("ancestor", "non-descendant",
+    "unrelated", "unresolved"))
+table(all$relation)
+```
+
+The rules are R1 (deactivation, gives an ancestor relation), R2
+(activation, gives a non-descendant relation), R3 (conditional
+independence, gives an unrelated call) and transitivity (if A causes B and
+B causes C, A causes C). `votes` counts the witnesses that agreed on an R1
+or R2 call; `pValue` is the p-value of the pair's last independence test,
+a continuous score that can rank pairs, for example to compute a
+precision-recall curve.
+
+The full matrix is available too: entry `[a, b]` is 1 if `a` is an
+ancestor of `b`, 0.5 if `a` is not a descendant of `b`, 0 if the two are
+unrelated and `NA` if unresolved.
+
+```{r matrix}
+round(ancestralMatrix(res)[1:6, 1:6], 1)
+```
+
+Because the data are simulated, we can score the result against the
+true graph.
+
+```{r evaluate}
+evaluateAncestral(res, trueAncestral(sim))
+```
+
+# Bioconductor containers
+
+`ascend()` also accepts `SummarizedExperiment` objects; choose the assay
+with `backgroundAssay` and `foregroundAssay`.
+
+```{r se}
+library(SummarizedExperiment)
+geno <- SummarizedExperiment(assays = list(dosage = sim$background))
+expr <- SummarizedExperiment(assays = list(logcounts = sim$foreground))
+res_se <- ascend(geno, expr, backgroundAssay = "dosage",
+    foregroundAssay = "logcounts")
+identical(ancestralMatrix(res_se), ancestralMatrix(res))
+```
+
+For a `MultiAssayExperiment`, name the two experiments.
+`ascendMultiAssay()` matches samples through the sample map and keeps
+those present in both.
+
+```{r mae, eval = requireNamespace("MultiAssayExperiment", quietly = TRUE)}
+library(MultiAssayExperiment)
+mae <- MultiAssayExperiment(experiments = list(snp = sim$background,
+    rna = sim$foreground))
+res_mae <- ascendMultiAssay(mae, background = "snp", foreground = "rna")
+identical(ancestralMatrix(res_mae), ancestralMatrix(res))
+```
+
+# Settings
+
+* `alpha` and `alphaMB` are the significance levels of the orientation
+    rules and of the nearest-ancestor searches (both 0.05).
+* `fdr = TRUE` applies a Benjamini-Hochberg correction to the pairwise
+    tests of each sweep.
+* `minVotes` is the number of agreeing witnesses needed before a
+    direction is committed. Raising it gives fewer, more reliable
+    directions.
+* `prescreen` limits each foreground variable's background candidates to
+    those marginally associated with it (Benjamini-Hochberg threshold 0.3).
+    This bounds the cost when the background is large; set it to 1 to keep
+    every background variable.
+
+```{r settings}
+strict <- ascend(sim$background, sim$foreground, minVotes = 2)
+table(ancestralEdges(strict)$relation)
+```
+
+# Cost
+
+`ascendStats()` counts the conditional independence tests by type and
+reports the size of the conditioning sets. Most tests are spent finding
+nearest ancestors, and the pairwise conditioning sets stay far smaller
+than the background layer.
+
+```{r cost}
+st <- ascendStats(res)
+st[c("nTests", "nPairTests", "nWitnessTests", "nBlanketTests",
+    "meanPairCondSize", "maxPairCondSize", "nSweeps")]
+```
+
+# Limitations
+
+* The two-tier order must be known. Mislabelling a few variables does
+    little harm, but feedback from the foreground to the background does.
+* Unmeasured background variables act as hidden confounders.
+* The Fisher-z test targets linear relations. ASCEND's rules use only
+    the outcomes of the tests, so other conditional independence tests can
+    be used in principle; this version implements Fisher-z.
+* In dense graphs, orientation errors are mostly reversals; directions
+    are most reliable in sparse networks.
+
+# Session information
+
+```{r session}
+sessionInfo()
+```
